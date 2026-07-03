@@ -4,9 +4,27 @@ __pycache__/
 # Secrets / credentials — never commit
 .env
 *.env
+!.env.example
 coral-pipe-*.json
 gmail_credentials.json
 gmail_token.json
+
+# Local databases & artifacts
+*.sqlite
+*.sqlite3
+*.db
+photostore/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+.vercel/
 
 # Nested upstream clone (strands-agents/harness-sdk) — not part of this repo
 harness-sdk/
