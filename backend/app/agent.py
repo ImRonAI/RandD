@@ -5,6 +5,7 @@ from strands.experimental.bidi.agent import BidiAgent
 from strands.experimental.bidi.models.gemini_live import BidiGeminiLiveModel
 from strands_tools import editor, load_tool, shell
 
+from app.memory import memory_tools
 from app.prompts import SYSTEM_PROMPT
 
 # Default matches the vendored strands-py BidiGeminiLiveModel (this repo's agent).
@@ -34,7 +35,7 @@ def create_agent(mode: str, voice: str) -> BidiAgent:
     )
     return BidiAgent(
         model=model,
-        tools=TOOLS,
+        tools=TOOLS + memory_tools(),
         system_prompt=SYSTEM_PROMPT,
         name="RandD Live",
         description="Real-time Gemini Live meta-tooling agent (editor, shell, load_tool).",

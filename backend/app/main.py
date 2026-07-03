@@ -11,6 +11,7 @@ from strands_tools import editor, load_tool, shell
 
 from app.agent import DEFAULT_MODEL_ID, create_agent
 from app.io import BidiWebSocketInput, BidiWebSocketOutput
+from app.memory import memory_tools
 from app.prompts import SYSTEM_PROMPT
 
 os.environ.setdefault("STRANDS_NON_INTERACTIVE", "true")
@@ -59,11 +60,18 @@ def _tool_spec(module: Any, name: str) -> dict[str, Any]:
 
 
 def tool_list() -> list[dict[str, str]]:
-    return [
+    tools = [
         _tool_spec(editor, "editor"),
         _tool_spec(shell, "shell"),
         _tool_spec(load_tool, "load_tool"),
     ]
+    for memory_tool in memory_tools():
+        spec = memory_tool.tool_spec
+        description = str(spec.get("description", ""))
+        if len(description) > 200:
+            description = description[:197].rstrip() + "..."
+        tools.append({"name": spec.get("name", memory_tool.tool_name), "description": description})
+    return tools
 
 
 @app.get("/api/agent")

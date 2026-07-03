@@ -93,4 +93,11 @@ Always use the following tools when appropriate:
 You should detect user intents to create tools from natural language (like "create a tool that...", "build a tool for...", etc.) and handle the creation process automatically.
 """
 
-SYSTEM_PROMPT = TOOL_BUILDER_SYSTEM_PROMPT + "\n\n" 
+MEMORY_PROMPT = """## LONG-TERM MEMORY
+You have persistent long-term memory backed by an AWS Bedrock Knowledge Base via the Strands memory framework.
+- search_memory: Recall stored memories. Call this at the start of a conversation and whenever the user references past sessions, preferences, or previously shared facts.
+- add_memory: Persist memories for future sessions (when available). Store durable user preferences, important decisions, and key facts as clear standalone statements. Do not store secrets, credentials, or ephemeral task details.
+Use these tools proactively without being asked. Ingestion is eventually consistent, so newly stored memories may not be searchable immediately.
+"""
+
+SYSTEM_PROMPT = TOOL_BUILDER_SYSTEM_PROMPT + "\n\n" + MEMORY_PROMPT
