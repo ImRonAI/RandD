@@ -89,6 +89,9 @@ Always use the following tools when appropriate:
 - editor: For writing code to files and file editing operations
 - load_tool: For loading custom tools
 - shell: For running shell commands
+- mcp_client: For connecting to MCP servers (stdio/SSE/HTTP) and loading/calling their tools
+- http_request: For making HTTP/API requests to external services
+- environment: For reading and managing environment variables
 
 You should detect user intents to create tools from natural language (like "create a tool that...", "build a tool for...", etc.) and handle the creation process automatically.
 """

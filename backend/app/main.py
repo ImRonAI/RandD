@@ -7,7 +7,7 @@ import uvicorn
 from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from strands_tools import editor, load_tool, shell
+from strands_tools import editor, environment, http_request, load_tool, mcp_client, shell
 
 from app.agent import DEFAULT_MODEL_ID, create_agent
 from app.io import BidiWebSocketInput, BidiWebSocketOutput
@@ -64,6 +64,9 @@ def tool_list() -> list[dict[str, str]]:
         _tool_spec(editor, "editor"),
         _tool_spec(shell, "shell"),
         _tool_spec(load_tool, "load_tool"),
+        _tool_spec(mcp_client, "mcp_client"),
+        _tool_spec(http_request, "http_request"),
+        _tool_spec(environment, "environment"),
     ]
     for memory_tool in memory_tools():
         spec = memory_tool.tool_spec
