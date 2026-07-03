@@ -59,7 +59,11 @@ const JOURNAL_TOOLS = new Set(["record_checklist_result", "journal"]);
 const PHOTO_TOOLS = new Set(["take_photo", "capture_photo"]);
 
 /** Returns true when the part changed the checklist. */
-const applyToolPart = (api: QcInspectionApi, part: LiveToolPart): boolean => {
+const applyToolPart = (
+  api: QcInspectionApi,
+  part: LiveToolPart,
+  getLatestFrame?: () => string | null
+): boolean => {
   const input = asRecord(part.input);
   const label = firstString(
     input.item,
@@ -78,6 +82,16 @@ const applyToolPart = (api: QcInspectionApi, part: LiveToolPart): boolean => {
     if (result === "FAIL") changed = api.setChecked(slug, false) || changed;
     const note = firstString(input.notes, input.note);
     if (note) changed = api.setNote(slug, note) || changed;
+    // Pin the current device-camera frame to this item (any-order routing:
+    // whatever the camera sees when the agent records the item).
+    if (input.attach_photo === true || input.attach_photo === "true") {
+      const frame = getLatestFrame?.();
+      if (frame) {
+        const tag = firstString(input.photo_tag, input.tag) ?? "evidence";
+        changed =
+          api.addPhoto(slug, `data:image/jpeg;base64,${frame}`, tag) || changed;
+      }
+    }
     return changed;
   }
 
@@ -133,7 +147,7 @@ export const InspectionView = ({
         if (appliedRef.current.has(key)) continue;
         appliedRef.current.add(key);
         try {
-          if (applyToolPart(api, part)) edited = true;
+          if (applyToolPart(api, part, agent.getLatestFrame)) edited = true;
         } catch {
           // never let a malformed tool payload break the checklist
         }
@@ -141,7 +155,7 @@ export const InspectionView = ({
     }
     // Surface the checklist whenever the agent touched it.
     if (edited) onAgentEditRef.current?.();
-  }, [agent.messages, ready]);
+  }, [agent.messages, agent.getLatestFrame, ready]);
 
   return (
     <iframe

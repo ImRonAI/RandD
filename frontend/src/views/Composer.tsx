@@ -1,5 +1,13 @@
-import { MicIcon, MicOffIcon, WorkflowIcon, XIcon } from "lucide-react";
-import { useCallback, useState } from "react";
+import {
+  ApertureIcon,
+  MicIcon,
+  MicOffIcon,
+  VideoIcon,
+  VideoOffIcon,
+  WorkflowIcon,
+  XIcon,
+} from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Attachment,
   AttachmentInfo,
@@ -52,6 +60,59 @@ import {
 } from "@/components/ai-elements/queue";
 import { SpeechInput } from "@/components/ai-elements/speech-input";
 import type { LiveAgent } from "@/hooks/use-live-agent";
+
+/** Floating live preview of the streaming device camera. */
+const CameraPreview = ({ agent }: { agent: LiveAgent }) => {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  useEffect(() => {
+    if (videoRef.current && agent.cameraStream) {
+      videoRef.current.srcObject = agent.cameraStream;
+    }
+  }, [agent.cameraStream]);
+
+  if (!agent.cameraStream) return null;
+  return (
+    <div className="mx-auto mb-2 w-full max-w-3xl">
+      <video
+        autoPlay
+        className="ml-auto h-28 rounded-md border object-cover"
+        muted
+        playsInline
+        ref={videoRef}
+      />
+    </div>
+  );
+};
+
+/** Camera device picker (videoinput analogue of MicSelector). */
+const CameraDeviceSelect = ({ agent }: { agent: LiveAgent }) => {
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+
+  useEffect(() => {
+    if (!agent.cameraActive) return;
+    navigator.mediaDevices
+      .enumerateDevices()
+      .then((all) => setDevices(all.filter((d) => d.kind === "videoinput")))
+      .catch(() => setDevices([]));
+  }, [agent.cameraActive]);
+
+  if (!agent.cameraActive || devices.length < 2) return null;
+  return (
+    <select
+      aria-label="Select camera"
+      className="h-8 max-w-40 truncate rounded-md bg-transparent text-muted-foreground text-xs outline-none"
+      onChange={(event) => agent.selectCameraDevice(event.target.value)}
+      value={agent.cameraDeviceId ?? ""}
+    >
+      {devices.map((device, index) => (
+        <option key={device.deviceId} value={device.deviceId}>
+          {device.label || `Camera ${index + 1}`}
+        </option>
+      ))}
+    </select>
+  );
+};
 
 const ComposerAttachments = () => {
   const attachments = usePromptInputAttachments();
@@ -163,8 +224,17 @@ export const Composer = ({
     }
   }, [agent]);
 
+  const toggleCamera = useCallback(() => {
+    if (agent.cameraActive) {
+      agent.stopCamera();
+    } else {
+      agent.startCamera();
+    }
+  }, [agent]);
+
   return (
     <div className="border-t bg-background/95 px-4 pt-2 pb-4 backdrop-blur">
+      <CameraPreview agent={agent} />
       <PromptQueue agent={agent} />
       <PromptInput
         accept="image/*"
@@ -213,6 +283,25 @@ export const Composer = ({
               )}
               <span>{agent.micActive ? "Mute" : "Mic"}</span>
             </PromptInputButton>
+            <PromptInputButton
+              disabled={agent.status !== "connected"}
+              onClick={toggleCamera}
+              variant={agent.cameraActive ? "default" : "ghost"}
+            >
+              {agent.cameraActive ? (
+                <VideoOffIcon className="size-4" />
+              ) : (
+                <VideoIcon className="size-4" />
+              )}
+              <span>{agent.cameraActive ? "Stop cam" : "Camera"}</span>
+            </PromptInputButton>
+            {agent.cameraActive && (
+              <PromptInputButton onClick={() => agent.snapPhoto()} variant="ghost">
+                <ApertureIcon className="size-4" />
+                <span>Snap</span>
+              </PromptInputButton>
+            )}
+            <CameraDeviceSelect agent={agent} />
             <MicSelector
               onValueChange={(deviceId) =>
                 deviceId && agent.selectMicDevice(deviceId)

@@ -9,6 +9,7 @@ from strands_tools import editor, environment, http_request, load_tool, mcp_clie
 
 from app.memory import memory_tools
 from app.prompts import SYSTEM_PROMPT
+from app.qc_journal import record_checklist_result
 from app.tool_libraries import list_library_tools
 
 # Default matches the vendored strands-py BidiGeminiLiveModel (this repo's agent).
@@ -66,6 +67,8 @@ TOOLS = [
     mcp_client.mcp_client,
     http_request,  # module-based tool (TOOL_SPEC + function)
     environment,  # module-based tool (TOOL_SPEC + function)
+    # QC turnover inspection journal (routes to the live checklist form)
+    record_checklist_result,
     # QC vision tools, always loaded (by file path — see _fun_tool_paths)
     *_fun_tool_paths("take_photo", "yolo_vision"),
 ]

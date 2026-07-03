@@ -15,6 +15,7 @@ import {
   PcmPlayer,
   pcm16ToWavBlob,
 } from "@/lib/audio";
+import { CameraCapture } from "@/lib/camera";
 import type {
   AgentCard,
   ConnectionStatus,
@@ -59,6 +60,9 @@ export const useLiveAgent = () => {
   const [model, setModelState] = useState<LiveModel["id"]>("openai");
   const [models, setModels] = useState<LiveModel[]>([]);
   const [micDeviceId, setMicDeviceId] = useState<string | undefined>();
+  const [cameraActive, setCameraActive] = useState(false);
+  const [cameraDeviceId, setCameraDeviceId] = useState<string | undefined>();
+  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
   const [agentCard, setAgentCard] = useState<AgentCard | null>(null);
   const [voices, setVoices] = useState<LiveVoice[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -66,6 +70,8 @@ export const useLiveAgent = () => {
 
   const socketRef = useRef<WebSocket | null>(null);
   const micRef = useRef<MicCapture | null>(null);
+  const cameraRef = useRef<CameraCapture | null>(null);
+  const lastFrameRef = useRef<string | null>(null);
   const playerRef = useRef<PcmPlayer | null>(null);
   const audioChunksRef = useRef<Uint8Array[]>([]);
   const audioRateRef = useRef(24000);
@@ -392,6 +398,10 @@ export const useLiveAgent = () => {
     micRef.current?.stop();
     micRef.current = null;
     setMicActive(false);
+    cameraRef.current?.stop();
+    cameraRef.current = null;
+    setCameraActive(false);
+    setCameraStream(null);
     await playerRef.current?.close();
     playerRef.current = null;
     socketRef.current?.close();
@@ -479,6 +489,73 @@ export const useLiveAgent = () => {
     setMicActive(false);
   }, []);
 
+  /** Start the device camera (browser getUserMedia) and stream frames to the model. */
+  const startCamera = useCallback(
+    async (deviceId?: string) => {
+      cameraRef.current?.stop();
+      const capture = new CameraCapture((jpegBase64) => {
+        lastFrameRef.current = jpegBase64;
+        sendRaw({
+          type: "bidi_image_input",
+          image: jpegBase64,
+          mime_type: "image/jpeg",
+        });
+      });
+      await capture.start(deviceId ?? cameraDeviceId);
+      cameraRef.current = capture;
+      setCameraStream(capture.mediaStream);
+      setCameraActive(true);
+    },
+    [cameraDeviceId, sendRaw]
+  );
+
+  const stopCamera = useCallback(() => {
+    cameraRef.current?.stop();
+    cameraRef.current = null;
+    setCameraActive(false);
+    setCameraStream(null);
+  }, []);
+
+  const selectCameraDevice = useCallback(
+    async (deviceId: string) => {
+      setCameraDeviceId(deviceId);
+      if (cameraRef.current) {
+        await startCamera(deviceId);
+      }
+    },
+    [startCamera]
+  );
+
+  /** Send one full-quality frame right now (e.g. "take a photo of this"). */
+  const snapPhoto = useCallback(() => {
+    const frame = cameraRef.current?.snap();
+    if (frame) {
+      lastFrameRef.current = frame;
+      sendRaw({ type: "bidi_image_input", image: frame, mime_type: "image/jpeg" });
+      // Show the snap in the conversation thread (rendered by the Image element).
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: nanoid(),
+          role: "user",
+          parts: [
+            {
+              type: "file",
+              url: `data:image/jpeg;base64,${frame}`,
+              mediaType: "image/jpeg",
+              filename: "camera-snap.jpg",
+            },
+          ],
+          createdAt: Date.now(),
+        },
+      ]);
+    }
+    return Boolean(frame);
+  }, [sendRaw]);
+
+  /** Latest camera frame (base64 JPEG) — used to pin photos onto checklist items. */
+  const getLatestFrame = useCallback(() => lastFrameRef.current, []);
+
   const selectMicDevice = useCallback(
     async (deviceId: string) => {
       setMicDeviceId(deviceId);
@@ -561,6 +638,15 @@ export const useLiveAgent = () => {
     selectMicDevice,
     speaking,
     personaState,
+    // camera
+    cameraActive,
+    cameraDeviceId,
+    cameraStream,
+    startCamera,
+    stopCamera,
+    selectCameraDevice,
+    snapPhoto,
+    getLatestFrame,
     // agent metadata
     agentCard,
     workspaceFiles,
