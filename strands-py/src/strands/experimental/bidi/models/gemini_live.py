@@ -419,14 +419,14 @@ class BidiGeminiLiveModel(BidiModel):
     async def _send_image_content(self, image_input: BidiImageInputEvent) -> None:
         """Internal: Send image content using Gemini Live API.
 
-        Sends image frames following the same pattern as the GitHub example.
-        Images are sent as base64-encoded data with MIME type.
+        Sends image frames as realtime input media. Uses ``send_realtime_input``
+        (the supported replacement for the deprecated ``AsyncSession.send``),
+        decoding the event's base64 payload into a media blob.
         """
-        # Image is already base64 encoded in the event
-        msg = {"mime_type": image_input.mime_type, "data": image_input.image}
+        image_bytes = base64.b64decode(image_input.image)
+        image_blob = genai_types.Blob(data=image_bytes, mime_type=image_input.mime_type)
 
-        # Send using the same method as the GitHub example
-        await self._live_session.send(input=msg)
+        await self._live_session.send_realtime_input(media=image_blob)
 
     async def _send_text_content(self, text: str) -> None:
         """Internal: Send text content using Gemini Live API."""

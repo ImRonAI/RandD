@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install workspace packages (SDK is a local editable dep)
+        run: |
+          pip install -e harness-sdk/strands-py
+          pip install -e "packages/shared[dev]"
+          pip install -e "packages/db[dev]"
+          pip install -e "apps/agent[dev]"
+          pip install -e "apps/api[dev]"
+      - name: Lint
+        run: python -m ruff check packages apps/agent apps/api
+      - name: Test
+        run: python -m pytest packages/shared/tests packages/db/tests apps/agent/tests apps/api/tests -q
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Lint
+        run: pnpm lint
+      - name: Build
+        run: pnpm build
