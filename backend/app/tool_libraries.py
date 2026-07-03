@@ -11,7 +11,9 @@ returns the exact ``name`` + ``path`` arguments to pass to load_tool.
 """
 
 import importlib
+import importlib.util
 import pkgutil
+from pathlib import Path
 from typing import Any
 
 from strands import tool
@@ -37,15 +39,36 @@ def _module_tools(module: Any) -> list[str]:
     return sorted(set(names))
 
 
+def _load_module_standalone(name: str, path: Path) -> Any:
+    """Load a module directly from its file, without executing the parent
+    package's ``__init__`` (strands_fun_tools' init imports pyautogui, which
+    dies headless with KeyError: 'DISPLAY')."""
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _describe_library(library: str) -> list[str]:
     lines = [f"# {library} — {TOOL_LIBRARIES[library]}"]
-    package = importlib.import_module(library)
-    for info in sorted(pkgutil.iter_modules(package.__path__), key=lambda m: m.name):
+    pkg_spec = importlib.util.find_spec(library)
+    if pkg_spec is None or not pkg_spec.submodule_search_locations:
+        lines.append("- UNAVAILABLE (package not installed)")
+        return lines
+    search_paths = list(pkg_spec.submodule_search_locations)
+    for info in sorted(pkgutil.iter_modules(search_paths), key=lambda m: m.name):
         if info.name.startswith("_"):
             continue
         module_path = f"{library}.{info.name}"
         try:
-            module = importlib.import_module(module_path)
+            if info.ispkg:
+                module = importlib.import_module(module_path)
+            else:
+                module = _load_module_standalone(
+                    f"_lib_{library}_{info.name}", Path(search_paths[0]) / f"{info.name}.py"
+                )
         except Exception as e:  # missing optional extra, hardware, etc.
             lines.append(f"- {info.name}: UNAVAILABLE ({type(e).__name__}: {e})")
             continue

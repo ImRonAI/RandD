@@ -1,4 +1,6 @@
+import importlib.util
 import os
+from pathlib import Path
 from typing import Any
 
 from app import _vendor  # noqa: F401  (must run before strands.experimental.bidi imports)
@@ -46,6 +48,16 @@ PROVIDERS: dict[str, dict[str, Any]] = {
     },
 }
 
+def _fun_tool_paths(*module_names: str) -> list[str]:
+    """File paths of strands_fun_tools modules, loadable without importing the
+    package __init__ (it pulls in pyautogui, which dies headless)."""
+    spec = importlib.util.find_spec("strands_fun_tools")
+    if spec is None or not spec.submodule_search_locations:
+        return []
+    base = Path(next(iter(spec.submodule_search_locations)))
+    return [str(base / f"{name}.py") for name in module_names if (base / f"{name}.py").exists()]
+
+
 TOOLS = [
     editor.editor,
     shell.shell,
@@ -54,6 +66,8 @@ TOOLS = [
     mcp_client.mcp_client,
     http_request,  # module-based tool (TOOL_SPEC + function)
     environment,  # module-based tool (TOOL_SPEC + function)
+    # QC vision tools, always loaded (by file path — see _fun_tool_paths)
+    *_fun_tool_paths("take_photo", "yolo_vision"),
 ]
 
 
