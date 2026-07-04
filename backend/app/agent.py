@@ -7,11 +7,15 @@ from app import _vendor  # noqa: F401  (must run before strands.experimental.bid
 from strands.experimental.bidi.agent import BidiAgent
 from strands_tools import editor, environment, http_request, load_tool, mcp_client, shell
 from strands_tools.slack import slack, slack_send_message
+from strands_google.google_auth import google_auth
+from strands_google.gmail_helpers import gmail_reply, gmail_send
+from strands_google.use_google import use_google
 
 from app.camera_control import control_camera
 from app.memory import memory_tools
 from app.prompts import SYSTEM_PROMPT
 from app.qc_journal import attach_item_photo, list_checklist_items, record_checklist_result
+from app.take_video import take_video
 from app.tool_libraries import list_library_tools
 
 # Default matches the vendored strands-py BidiGeminiLiveModel (this repo's agent).
@@ -78,8 +82,15 @@ TOOLS = [
     # Slack delivery (Addendum 1): reports via files_upload_v2, notes via messages
     slack,
     slack_send_message,
+    # Google Workspace (strands-google): 200+ APIs via service account / OAuth
+    use_google,
+    google_auth,
+    gmail_send,
+    gmail_reply,
     # QC vision tools, always loaded (by file path — see _fun_tool_paths)
     *_fun_tool_paths("take_photo", "yolo_vision"),
+    # Server-camera video clips (take_photo's sibling; device camcorder = browser)
+    take_video,
 ]
 
 
