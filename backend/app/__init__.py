@@ -15,3 +15,9 @@ load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 # from AWS_REGION so every boto3 client (Bedrock KB memory, Nova) gets a region.
 if os.getenv("AWS_REGION") and not os.getenv("AWS_DEFAULT_REGION"):
     os.environ["AWS_DEFAULT_REGION"] = os.environ["AWS_REGION"]
+
+# Slack uses rotating tokens (~12h expiry): refresh the bot token at startup so
+# the slack tools always initialize with a live token.
+from app.slack_token import ensure_fresh_bot_token  # noqa: E402
+
+ensure_fresh_bot_token()

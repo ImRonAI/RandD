@@ -6,6 +6,7 @@ from typing import Any
 from app import _vendor  # noqa: F401  (must run before strands.experimental.bidi imports)
 from strands.experimental.bidi.agent import BidiAgent
 from strands_tools import editor, environment, http_request, load_tool, mcp_client, shell
+from strands_tools.slack import slack, slack_send_message
 
 from app.camera_control import control_camera
 from app.memory import memory_tools
@@ -74,6 +75,9 @@ TOOLS = [
     attach_item_photo,
     # Inspector's browser camera (frontend executes the start/stop/snap)
     control_camera,
+    # Slack delivery (Addendum 1): reports via files_upload_v2, notes via messages
+    slack,
+    slack_send_message,
     # QC vision tools, always loaded (by file path — see _fun_tool_paths)
     *_fun_tool_paths("take_photo", "yolo_vision"),
 ]
