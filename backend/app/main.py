@@ -8,14 +8,14 @@ from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from strands_tools import editor, environment, http_request, load_tool, mcp_client, shell
+from strands.tools.registry import ToolRegistry
 
-from app.agent import DEFAULT_MODEL_ID, DEFAULT_PROVIDER, PROVIDERS, create_agent
+from app.agent import DEFAULT_MODEL_ID, DEFAULT_PROVIDER, PROVIDERS, TOOLS, create_agent
 from app import browser_camera
 from app.io import BidiWebSocketInput, BidiWebSocketOutput
 from app.memory import memory_tools
 from app.prompts import SYSTEM_PROMPT
-from app.transcribe import transcribe_audio
+from app.transcribe import compress_clip, measure_loudness, transcribe_audio
 
 os.environ.setdefault("STRANDS_NON_INTERACTIVE", "true")
 os.environ.setdefault("BYPASS_TOOL_CONSENT", "true")
@@ -67,13 +67,23 @@ async def inspection_video(
     path.write_bytes(data)
 
     transcript = await run_in_threadpool(transcribe_audio, path, mime)
+    max_db = await run_in_threadpool(measure_loudness, path)
+    # Compact web MP4 for the form embed — the raw recording bloats exports
+    # (~3.5 MB per 10 s clip baked in as base64) and webm won't play on iOS.
+    compact = await run_in_threadpool(compress_clip, path)
+    serve = compact or path
     info = {
-        "path": str(path),
-        "url": f"/workspace/captures/{filename}",
+        "path": str(serve),
+        "url": f"/workspace/captures/{serve.name}",
+        "original_path": str(path),
         "section": section,
         "duration": duration,
-        "size": len(data),
+        "size": serve.stat().st_size,
         "transcript": transcript,
+        # Surfaced so the agent can tell the inspector the mic was dead
+        # (max below about -50 dBFS means the track carried no real speech).
+        "audio_max_db": max_db,
+        "audio_ok": max_db is not None and max_db > -50,
     }
     browser_camera.deliver_clip(info)
     return info
@@ -95,13 +105,20 @@ async def inspection_export(request: Request) -> dict[str, str]:
     result = {"path": str(LATEST_REPORT), "url": "/workspace/reports/inspection-report-latest.html"}
     try:
         from app.kb_archive import archive_report, extract_state
+        from app.report_db import upsert_form
 
         state = extract_state(html)
+        # Live persistence: every export updates the form's row (keyed by the
+        # form's own UUID), so the database tracks the inspection as it is
+        # filled out — not just at archive time.
+        form_id = await run_in_threadpool(upsert_form, state, len(html.encode("utf-8")))
+        if form_id:
+            result["form_uuid"] = form_id
         if state and state.get("signedOff") and os.getenv("BEDROCK_KB_S3_BUCKET"):
             archived = await run_in_threadpool(archive_report, html, "auto-archived on sign-off")
             result["archived"] = archived["summary_uri"]
     except Exception:
-        pass  # archiving must never break the export path
+        pass  # persistence/archiving must never break the export path
     return result
 
 
@@ -141,33 +158,23 @@ async def startup() -> None:
     os.chdir(WORKSPACE_DIR)
 
 
-def _tool_spec(module: Any, name: str) -> dict[str, Any]:
-    spec = getattr(module, "TOOL_SPEC", None)
-    if spec is None:
-        tool = getattr(module, name)
-        spec = getattr(tool, "TOOL_SPEC", None) or getattr(tool, "tool_spec", {})
-    description = str(spec.get("description", ""))
-    if len(description) > 200:
-        description = description[:197].rstrip() + "..."
-    return {"name": spec.get("name", name), "description": description}
+_tool_list_cache: list[dict[str, str]] | None = None
 
 
 def tool_list() -> list[dict[str, str]]:
-    tools = [
-        _tool_spec(editor, "editor"),
-        _tool_spec(shell, "shell"),
-        _tool_spec(load_tool, "load_tool"),
-        _tool_spec(mcp_client, "mcp_client"),
-        _tool_spec(http_request, "http_request"),
-        _tool_spec(environment, "environment"),
-    ]
-    for memory_tool in memory_tools():
-        spec = memory_tool.tool_spec
-        description = str(spec.get("description", ""))
-        if len(description) > 200:
-            description = description[:197].rstrip() + "..."
-        tools.append({"name": spec.get("name", memory_tool.tool_name), "description": description})
-    return tools
+    """Every tool registered on the live agent (same registry BidiAgent builds)."""
+    global _tool_list_cache
+    if _tool_list_cache is None:
+        registry = ToolRegistry()
+        registry.process_tools(TOOLS + memory_tools())
+        tools = []
+        for spec in registry.get_all_tool_specs():
+            description = str(spec.get("description", ""))
+            if len(description) > 200:
+                description = description[:197].rstrip() + "..."
+            tools.append({"name": str(spec["name"]), "description": description})
+        _tool_list_cache = sorted(tools, key=lambda tool: tool["name"])
+    return _tool_list_cache
 
 
 @app.get("/api/agent")

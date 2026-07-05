@@ -1,0 +1,153 @@
+From 5505a0218958d436eecf0e4631f158bb70a453ff Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 5 Jul 2026 08:57:44 +0000
+Subject: [PATCH] Walkthrough clips keep mic audio, exported form no longer
+ truncated, Gemini Live enabled, Nova Sonic connects
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- use-live-agent: pass the live session mic stream into CameraCapture.record —
+  the plumbing landed last commit but the call site never used it, so recording
+  grabbed a second (silent on iOS Safari/Android) mic track: soundless clips.
+  Verified end-to-end that the uploaded clip's opus audio track survives
+  take_video -> /api/inspection/video -> saved file -> form embed -> export.
+- inspection.html exportHtml: the strip-previous-state regex matched its own
+  quoted source and lazily ate everything to the file's final </script>,
+  leaving the main script unclosed — browsers drop unclosed scripts, so every
+  exported form (the file shipped to Slack) opened dead. Anchored the regex to
+  a real boot script ("= {") and switched the boot insertion to a replacer
+  function so $-sequences in notes can't corrupt the doc. Verified in-browser:
+  exact notes, photos, and the audio-bearing video rehydrate from the export.
+- agent: Gemini Live (gemini-3.1-flash-live-preview) enabled in the provider
+  registry — appears in /api/models and connects via /ws.
+- requirements: add aws-sdk-bedrock-runtime — BidiNovaSonicModel imports
+  aws_sdk_bedrock_runtime, which was never installed, so every Nova session
+  died at model construction (ModuleNotFoundError). README notes the
+  Python 3.12+ floor the Nova provider enforces.
+- main: create_agent moved inside the websocket try block so construction
+  failures reach the browser as bidi_error instead of a silent dead socket
+  (this is why Nova "wouldn't connect" with no visible reason).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01RAA1vKwXKSMRyuFaq6SwKV
+---
+ backend/README.md                    |  4 +++-
+ backend/app/agent.py                 |  7 +++----
+ backend/app/main.py                  |  5 +++--
+ backend/requirements.txt             |  3 +++
+ frontend/public/inspection.html      | 10 +++++++---
+ frontend/src/hooks/use-live-agent.ts |  4 +++-
+ 6 files changed, 22 insertions(+), 11 deletions(-)
+
+diff --git a/backend/README.md b/backend/README.md
+index 8fee93d..e39592b 100644
+--- a/backend/README.md
++++ b/backend/README.md
+@@ -1,8 +1,10 @@
+ # RandD Live Backend
+ 
++Requires **Python 3.12+** (the Nova Sonic bidi provider refuses to import on older interpreters).
++
+ ```bash
+ cd backend
+-python3 -m venv .backend-venv
++python3.12 -m venv .backend-venv
+ . .backend-venv/bin/activate
+ pip install -r requirements.txt
+ cp .env.example .env   # then fill in real credentials — .env is gitignored, never commit it
+diff --git a/backend/app/agent.py b/backend/app/agent.py
+index e8c5f39..7a1fe9c 100644
+--- a/backend/app/agent.py
++++ b/backend/app/agent.py
+@@ -31,16 +31,15 @@ DEFAULT_PROVIDER = "openai"
+ 
+ # The three vended bidi providers (strands-py/src/strands/experimental/bidi/models).
+ # Each entry drives the frontend model picker and the per-provider voice list.
+-# "enabled" gates the picker and /ws — Gemini is off until a funded AI Studio
+-# key or Vertex allowlisting exists (1011/1008 as of 2026-07-03).
++# "enabled" gates the picker and /ws.
+ PROVIDERS: dict[str, dict[str, Any]] = {
+     "gemini": {
+         "name": "Gemini Live",
+         "vendor": "Google",
+         "model_id": os.getenv("GEMINI_LIVE_MODEL", DEFAULT_MODEL_ID),
+         "default_voice": "Puck",
+-        "description": "Native multimodal realtime — disabled pending billing.",
+-        "enabled": False,
++        "description": "Native multimodal realtime (gemini-3.1-flash-live-preview).",
++        "enabled": True,
+     },
+     "openai": {
+         "name": "GPT-Realtime-2",
+diff --git a/backend/app/main.py b/backend/app/main.py
+index d2edaf5..7aa6000 100644
+--- a/backend/app/main.py
++++ b/backend/app/main.py
+@@ -235,9 +235,10 @@ async def websocket_endpoint(
+         )
+         await websocket.close()
+         return
+-    agent = create_agent(mode=mode, voice=voice, provider=provider)
+-
+     try:
++        # Inside the try so construction failures (missing credentials, model
++        # deps) reach the browser as bidi_error instead of a dead socket.
++        agent = create_agent(mode=mode, voice=voice, provider=provider)
+         await agent.run(
+             inputs=[BidiWebSocketInput(websocket)],
+             outputs=[BidiWebSocketOutput(websocket)],
+diff --git a/backend/requirements.txt b/backend/requirements.txt
+index 7de5a07..42a7793 100644
+--- a/backend/requirements.txt
++++ b/backend/requirements.txt
+@@ -6,5 +6,8 @@ strands-fun-tools[clipboard,chess,display,template,utility,dialog,ui]>=0.4.0,<1.
+ strands-google>=0.1.0,<1.0.0
+ google-genai>=2.10.0,<3.0.0
+ boto3>=1.34.0,<2.0.0
++# Nova Sonic bidi streaming (BidiNovaSonicModel) — the experimental smithy SDK
++# it imports (aws_sdk_bedrock_runtime). Requires Python 3.12+.
++aws-sdk-bedrock-runtime>=0.1.0,<1.0.0
+ python-dotenv>=1.0.0,<2.0.0
+ imageio-ffmpeg>=0.5.0,<1.0.0
+diff --git a/frontend/public/inspection.html b/frontend/public/inspection.html
+index 5bf1f6d..d05a372 100644
+--- a/frontend/public/inspection.html
++++ b/frontend/public/inspection.html
+@@ -992,11 +992,15 @@ footer{max-width:760px;margin:0 auto;padding:32px 20px 48px;text-align:center;
+         if(s.video) s.video.src = await toDataUrl(s.video.src);
+       }
+       let source = await (await fetch(location.pathname)).text();
+-      // drop any previous baked-in state so re-exports stay clean
+-      source = source.replace(/<script>window\.__QC_STATE__[\s\S]*?<\/script>\n?/, '');
++      // Drop any previous baked-in state so re-exports stay clean. The "= \{"
++      // anchor matches only a real boot script (JSON starts with {), never the
++      // quoted literal in this code — without it the regex ate everything from
++      // here to the file's final closing script tag, truncating the export.
++      source = source.replace(/<script>window\.__QC_STATE__ = \{[\s\S]*?<\/script>\n?/, '');
+       const boot = '<script>window.__QC_STATE__ = ' +
+         JSON.stringify(state).replace(/<\/script/gi, '<\\/script') + ';<\/script>';
+-      return source.replace('<script>', boot + '\n<script>');
++      // Replacer function so "$" sequences in notes/media can't corrupt the doc.
++      return source.replace('<script>', function(){ return boot + '\n<script>'; });
+     }
+   };
+ 
+diff --git a/frontend/src/hooks/use-live-agent.ts b/frontend/src/hooks/use-live-agent.ts
+index 0b5e9e7..1e730da 100644
+--- a/frontend/src/hooks/use-live-agent.ts
++++ b/frontend/src/hooks/use-live-agent.ts
+@@ -610,7 +610,9 @@ export const useLiveAgent = () => {
+     setRecording(true);
+     try {
+       const clamped = Math.max(2, Math.min(durationSec || 10, 120));
+-      const blob = await camera.record(clamped * 1000);
++      // Reuse the live session mic track — a second getUserMedia while
++      // MicCapture holds the mic records silence on iOS Safari/some Androids.
++      const blob = await camera.record(clamped * 1000, micRef.current?.mediaStream);
+       const query = `section=${encodeURIComponent(section)}&duration=${clamped}`;
+       await fetch(`/api/inspection/video?${query}`, {
+         method: "POST",
+-- 
+2.43.0
+

@@ -8,7 +8,7 @@ python3.12 -m venv .backend-venv
 . .backend-venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env   # then fill in real credentials — .env is gitignored, never commit it
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --reload-dir app --port 8000   # --reload-dir keeps agent-written workspace files from restarting the server
 ```
 
 The server exposes `/api/agent`, `/api/voices`, `/api/workspace`, static workspace files at `/workspace/*`, and the live bridge at `/ws?mode=audio|text&voice=Puck`.

@@ -35,6 +35,8 @@ from ..types.events import (
     BidiInputEvent,
     BidiInterruptionEvent,
     BidiOutputEvent,
+    BidiResponseCompleteEvent,
+    BidiResponseStartEvent,
     BidiTextInputEvent,
     BidiTranscriptStreamEvent,
     BidiUsageEvent,
@@ -95,6 +97,10 @@ class BidiGeminiLiveModel(BidiModel):
         self._live_session_context_manager: Any = None
         self._live_session_handle: str | None = None
         self._connection_id: str | None = None
+        # Open response turn (None between turns). Gemini has no response id of
+        # its own, so we mint one per turn to emit the response start/complete
+        # events the agent loop and clients expect from every provider.
+        self._response_id: str | None = None
 
     def _resolve_client_config(self, config: dict[str, Any]) -> dict[str, Any]:
         """Resolve client config (sets default http_options if not provided)."""
@@ -202,6 +208,13 @@ class BidiGeminiLiveModel(BidiModel):
                 for event in self._convert_gemini_live_event(message):
                     yield event
 
+    def _open_response(self, events: list[BidiOutputEvent]) -> list[BidiOutputEvent]:
+        """Prepend a response start event when this is the first content of a turn."""
+        if self._response_id is None:
+            self._response_id = str(uuid.uuid4())
+            return [BidiResponseStartEvent(response_id=self._response_id), *events]
+        return events
+
     def _convert_gemini_live_event(self, message: LiveServerMessage) -> list[BidiOutputEvent]:
         """Convert Gemini Live API events to provider-agnostic format.
 
@@ -232,7 +245,20 @@ class BidiGeminiLiveModel(BidiModel):
 
         # Handle interruption first (from server_content)
         if message.server_content and message.server_content.interrupted:
-            return [BidiInterruptionEvent(reason="user_speech")]
+            events: list[BidiOutputEvent] = [BidiInterruptionEvent(reason="user_speech")]
+            if self._response_id:
+                events.append(BidiResponseCompleteEvent(response_id=self._response_id, stop_reason="interrupted"))
+                self._response_id = None
+            return events
+
+        # End of turn: close the open response so clients can advance their
+        # turn state (queued input, UI status). Matches nova/openai behavior.
+        if message.server_content and message.server_content.turn_complete:
+            if self._response_id:
+                event = BidiResponseCompleteEvent(response_id=self._response_id, stop_reason="complete")
+                self._response_id = None
+                return [event]
+            return []
 
         # Handle input transcription (user's speech) - emit as transcript event
         if message.server_content and message.server_content.input_transcription:
@@ -259,30 +285,34 @@ class BidiGeminiLiveModel(BidiModel):
             if hasattr(output_transcript, "text") and output_transcript.text:
                 transcription_text = output_transcript.text
                 logger.debug("text_length=<%d> | gemini output transcription detected", len(transcription_text))
-                return [
-                    BidiTranscriptStreamEvent(
-                        delta={"text": transcription_text},
-                        text=transcription_text,
-                        role="assistant",
-                        # TODO: https://github.com/googleapis/python-genai/issues/1504
-                        is_final=bool(output_transcript.finished),
-                        current_transcript=transcription_text,
-                    )
-                ]
+                return self._open_response(
+                    [
+                        BidiTranscriptStreamEvent(
+                            delta={"text": transcription_text},
+                            text=transcription_text,
+                            role="assistant",
+                            # TODO: https://github.com/googleapis/python-genai/issues/1504
+                            is_final=bool(output_transcript.finished),
+                            current_transcript=transcription_text,
+                        )
+                    ]
+                )
 
         # Handle audio output using SDK's built-in data property
         # Check this BEFORE text to avoid triggering warning on mixed content
         if message.data:
             # Convert bytes to base64 string for JSON serializability
             audio_b64 = base64.b64encode(message.data).decode("utf-8")
-            return [
-                BidiAudioStreamEvent(
-                    audio=audio_b64,
-                    format="pcm",
-                    sample_rate=cast(AudioSampleRate, self.config["audio"]["output_rate"]),
-                    channels=cast(AudioChannel, self.config["audio"]["channels"]),
-                )
-            ]
+            return self._open_response(
+                [
+                    BidiAudioStreamEvent(
+                        audio=audio_b64,
+                        format="pcm",
+                        sample_rate=cast(AudioSampleRate, self.config["audio"]["output_rate"]),
+                        channels=cast(AudioChannel, self.config["audio"]["channels"]),
+                    )
+                ]
+            )
 
         # Handle text output from model_turn (avoids warning by checking parts directly)
         if message.server_content and message.server_content.model_turn:
@@ -297,15 +327,17 @@ class BidiGeminiLiveModel(BidiModel):
 
                 if text_parts:
                     full_text = " ".join(text_parts)
-                    return [
-                        BidiTranscriptStreamEvent(
-                            delta={"text": full_text},
-                            text=full_text,
-                            role="assistant",
-                            is_final=True,
-                            current_transcript=full_text,
-                        )
-                    ]
+                    return self._open_response(
+                        [
+                            BidiTranscriptStreamEvent(
+                                delta={"text": full_text},
+                                text=full_text,
+                                role="assistant",
+                                is_final=True,
+                                current_transcript=full_text,
+                            )
+                        ]
+                    )
 
         # Handle tool calls - return list to support multiple tool calls
         if message.tool_call and message.tool_call.function_calls:
@@ -320,7 +352,7 @@ class BidiGeminiLiveModel(BidiModel):
                 tool_events.append(
                     ToolUseStreamEvent(delta={"toolUse": tool_use_event}, current_tool_use=dict(tool_use_event))
                 )
-            return tool_events
+            return self._open_response(tool_events)
 
         # Handle usage metadata
         if hasattr(message, "usage_metadata") and message.usage_metadata:
@@ -426,7 +458,10 @@ class BidiGeminiLiveModel(BidiModel):
         image_bytes = base64.b64decode(image_input.image)
         image_blob = genai_types.Blob(data=image_bytes, mime_type=image_input.mime_type)
 
-        await self._live_session.send_realtime_input(media=image_blob)
+        # media= maps to realtime_input.media_chunks, which the Live API now
+        # rejects with 1007 ("media_chunks is deprecated. Use audio, video, or
+        # text instead") — killing the session on the first camera frame.
+        await self._live_session.send_realtime_input(video=image_blob)
 
     async def _send_text_content(self, text: str) -> None:
         """Internal: Send text content using Gemini Live API."""
@@ -478,6 +513,7 @@ class BidiGeminiLiveModel(BidiModel):
 
         async def stop_connection() -> None:
             self._connection_id = None
+            self._response_id = None
 
         await stop_all(stop_session, stop_connection)
 

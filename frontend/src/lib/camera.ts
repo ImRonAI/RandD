@@ -87,11 +87,14 @@ export class CameraCapture {
    */
   async record(durationMs: number, liveMic?: MediaStream | null): Promise<Blob> {
     if (!this.stream) throw new Error("camera not started");
-    const liveTracks = (liveMic?.getAudioTracks() ?? []).filter(
-      (track) => track.readyState === "live"
-    );
+    // CLONE the live session track for the recorder — feeding the same track
+    // object to a second consumer records silence on iOS Safari and some
+    // Chrome builds (measured: clips with a dead -70 dB opus track).
+    const cloned = (liveMic?.getAudioTracks() ?? [])
+      .filter((track) => track.readyState === "live" && !track.muted)
+      .map((track) => track.clone());
     let mic: MediaStream | null = null;
-    if (liveTracks.length === 0) {
+    if (cloned.length === 0) {
       try {
         mic = await navigator.mediaDevices.getUserMedia({
           audio: { echoCancellation: true, noiseSuppression: true },
@@ -102,7 +105,7 @@ export class CameraCapture {
     }
     const combined = new MediaStream([
       ...this.stream.getVideoTracks(),
-      ...(liveTracks.length > 0 ? liveTracks : mic?.getAudioTracks() ?? []),
+      ...(cloned.length > 0 ? cloned : mic?.getAudioTracks() ?? []),
     ]);
     const mimeType = [
       "video/webm;codecs=vp9,opus",
@@ -128,6 +131,7 @@ export class CameraCapture {
     }
     const blob = await done;
     for (const track of mic?.getTracks() ?? []) track.stop();
+    for (const track of cloned) track.stop();
     return blob;
   }
 

@@ -11,7 +11,8 @@ from strands_google.use_google import use_google
 
 from app.camera_control import control_camera
 from app.capture_tools import take_photo, take_video
-from app.kb_archive import archive_inspection_report
+from app.gmail_attachments import gmail_send_with_attachments
+from app.kb_archive import archive_inspection_report, save_site_memory
 from app.memory import memory_tools
 from app.prompts import SYSTEM_PROMPT
 from app.qc_journal import (
@@ -82,11 +83,14 @@ TOOLS = [
     google_auth,
     gmail_send,
     gmail_reply,
+    gmail_send_with_attachments,
     # Device-camera capture: browser stream first, server hardware fallback
     take_photo,
     take_video,
     # Archive the latest inspection form into the KB's S3 bucket (memory + artifact)
     archive_inspection_report,
+    # Per-house site memories that don't come from inspections
+    save_site_memory,
     # YOLO object detection over the device-camera stream
     yolo_vision,
 ]
@@ -102,24 +106,14 @@ def build_model(provider: str, mode: str, voice: str) -> Any:
     if provider == "gemini":
         from strands.experimental.bidi.models.gemini_live import BidiGeminiLiveModel
 
-        if mode == "text":
-            provider_config["inference"] = {"response_modalities": ["TEXT"]}
-        # Vertex AI (service-account auth via GOOGLE_APPLICATION_CREDENTIALS) when
-        # enabled; otherwise AI Studio via GOOGLE_API_KEY. google-genai supports both.
-        client_config: dict[str, Any] | None
-        if os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() in ("1", "true", "yes"):
-            client_config = {
-                "vertexai": True,
-                "project": os.getenv("GOOGLE_CLOUD_PROJECT", ""),
-                "location": os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1"),
-            }
-        else:
-            api_key = os.getenv("GOOGLE_API_KEY")
-            client_config = {"api_key": api_key} if api_key else None
+        # SDK-default config: AUDIO responses with input/output transcription.
+        # gemini-3.1-flash-live-preview rejects TEXT-only response modalities,
+        # so text-mode sessions ride the same audio session and read transcripts.
+        api_key = os.getenv("GOOGLE_API_KEY")
         return BidiGeminiLiveModel(
             model_id=PROVIDERS["gemini"]["model_id"],
             provider_config=provider_config,
-            client_config=client_config,
+            client_config={"api_key": api_key} if api_key else None,
         )
 
     if provider == "openai":

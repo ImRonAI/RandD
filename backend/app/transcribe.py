@@ -56,10 +56,107 @@ def _to_pcm(path: str | Path) -> Optional[bytes]:
         return None
 
 
+def _gemini_transcribe(path: str | Path) -> Optional[str]:
+    """Transcribe via Gemini (the project's funded key). Returns None on any failure."""
+    key = os.getenv("GOOGLE_API_KEY")
+    if not key:
+        return None
+    pcm = _to_pcm(path)
+    if not pcm:
+        return None
+    try:
+        from google import genai
+        from google.genai import types as genai_types
+
+        client = genai.Client(api_key=key)
+        model = os.getenv("GEMINI_TRANSCRIBE_MODEL", "gemini-flash-latest")
+        # Raw pcm16 wrapped as a WAV so the API knows the format.
+        header = _wav_header(len(pcm))
+        response = client.models.generate_content(
+            model=model,
+            contents=[
+                genai_types.Part.from_bytes(data=header + pcm, mime_type="audio/wav"),
+                _PROMPT,
+            ],
+        )
+        text = (response.text or "").strip()
+        if not text or text.lower().startswith("[no speech"):
+            return None
+        return text
+    except Exception:
+        return None
+
+
+def _wav_header(data_length: int) -> bytes:
+    import struct
+
+    return (
+        b"RIFF" + struct.pack("<I", 36 + data_length) + b"WAVE"
+        + b"fmt " + struct.pack("<IHHIIHH", 16, 1, 1, _RATE, _RATE * 2, 2, 16)
+        + b"data" + struct.pack("<I", data_length)
+    )
+
+
+def measure_loudness(path: str | Path) -> Optional[float]:
+    """Max audio level of a clip in dBFS (~0 = loud, < -50 = effectively silent)."""
+    ffmpeg = _ffmpeg()
+    if not ffmpeg:
+        return None
+    try:
+        proc = subprocess.run(
+            [ffmpeg, "-i", str(path), "-af", "volumedetect", "-vn", "-f", "null", "-"],
+            capture_output=True, text=True, timeout=120,
+        )
+        for line in proc.stderr.splitlines():
+            if "max_volume:" in line:
+                return float(line.split("max_volume:")[1].replace("dB", "").strip())
+    except Exception:
+        pass
+    return None
+
+
+def compress_clip(path: str | Path) -> Optional[Path]:
+    """Re-encode a walkthrough clip to compact web MP4 (640px H.264 + mono AAC).
+
+    Browser MediaRecorder clips run ~3.5 MB per 10 s and get baked into the
+    self-contained form export as base64 — the reason exports ballooned to
+    ~16 MB. The compact MP4 is ~85% smaller and also plays on iOS Safari,
+    which cannot play webm. Returns None (caller keeps the original) on any
+    failure or if the result isn't actually smaller.
+    """
+    ffmpeg = _ffmpeg()
+    if not ffmpeg:
+        return None
+    src = Path(path)
+    out = src.with_name(src.stem + "-web.mp4")
+    try:
+        proc = subprocess.run(
+            [ffmpeg, "-y", "-loglevel", "error", "-i", str(src),
+             "-vf", "scale='min(640,iw)':-2",
+             "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+             "-c:a", "aac", "-b:a", "64k", "-ac", "1",
+             "-movflags", "+faststart", str(out)],
+            capture_output=True, timeout=300,
+        )
+        if proc.returncode != 0 or not out.exists():
+            return None
+        if out.stat().st_size >= src.stat().st_size:
+            out.unlink(missing_ok=True)
+            return None
+        return out
+    except Exception:
+        return None
+
+
 def transcribe_audio(path: str | Path, mime: str = "video/webm") -> Optional[str]:
     """Transcribe the audio track of a media file. Returns None when unavailable."""
     if os.getenv("DISABLE_TRANSCRIPTION", "").lower() in ("1", "true", "yes"):
         return None  # cost kill-switch: clips still save/embed, just no transcript
+    # Gemini first: the OpenAI project is quota-limited, which silently produced
+    # "no transcript" for every clip (and made the agent report soundless video).
+    text = _gemini_transcribe(path)
+    if text:
+        return text
     key = os.getenv("OPENAI_API_KEY")
     if not key:
         return None

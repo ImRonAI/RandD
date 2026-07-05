@@ -1,21 +1,21 @@
 """Archive inspection reports into the Bedrock Knowledge Base's S3 bucket.
 
-The KB data source only ingests objects under its configured prefix
-(``BEDROCK_KB_S3_PREFIX``, default ``memories/``), so each archive writes two
-objects into the same bucket (``BEDROCK_KB_S3_BUCKET``):
+Every house gets its own folder tree in the bucket (``BEDROCK_KB_S3_BUCKET``):
 
-- ``memories/inspection-reports/<unit>/<timestamp>-summary.txt`` — a plain-text
-  digest of the inspection (verdicts, notes, section walkthroughs, repairs).
-  Lives under the data-source prefix, so Bedrock ingests it and the agent can
-  recall past inspections through ``search_memory``.
-- ``inspection-reports/artifacts/<unit>/<timestamp>-report.html`` — the full
-  self-contained interactive form (base64 media baked in). Deliberately outside
-  the data-source prefix: it is the durable artifact, not vector-index fodder.
+- ``memories/<house>/inspections/<timestamp>-summary.txt`` — plain-text digest
+  of each inspection (verdicts, notes, walkthroughs, repairs). Under the
+  data-source prefix, so it becomes searchable memory (search_memory).
+- ``memories/<house>/notes/<timestamp>-note.txt`` — additional site memories
+  that do NOT come from inspections (quirks, access details, history), written
+  by the ``save_site_memory`` tool. Also searchable.
+- ``artifacts/<house>/inspections/<timestamp>-report.html`` — the full
+  self-contained interactive form (media baked in). Deliberately outside the
+  data-source prefix: it is the durable artifact, not vector-index fodder.
 
-Best-effort ``StartIngestionJob`` follows the summary upload when
-``BEDROCK_KB_ID`` + ``BEDROCK_KB_DATA_SOURCE_ID`` are configured.
+Best-effort ``StartIngestionJob`` follows uploads when ``BEDROCK_KB_ID`` +
+``BEDROCK_KB_DATA_SOURCE_ID`` are configured.
 
-Bootstrap the folders once with: ``python -m app.kb_archive --init``
+Bootstrap a house's folders with: ``python -m app.kb_archive --init``
 """
 
 import json
@@ -37,17 +37,28 @@ def _bucket() -> Optional[str]:
     return os.getenv("BEDROCK_KB_S3_BUCKET")
 
 
-def _folder() -> str:
-    return os.getenv("KB_REPORTS_FOLDER", "inspection-reports").strip("/")
+def _memories_base() -> str:
+    return os.getenv("BEDROCK_KB_S3_PREFIX", "memories/").strip("/")
 
 
-def _knowledge_prefix() -> str:
-    base = os.getenv("BEDROCK_KB_S3_PREFIX", "memories/").strip("/")
-    return f"{base}/{_folder()}"
+def _slug(name: Any) -> str:
+    return re.sub(r"[^a-zA-Z0-9-]+", "-", str(name or "")).strip("-").lower() or "unknown"
 
 
-def _artifact_prefix() -> str:
-    return f"{_folder()}/artifacts"
+def _house_prefixes(house_slug: str) -> Dict[str, str]:
+    """The per-house folder tree inside the KB bucket."""
+    base = _memories_base()
+    return {
+        "inspections": f"{base}/{house_slug}/inspections",
+        "notes": f"{base}/{house_slug}/notes",
+        "artifacts": f"artifacts/{house_slug}/inspections",
+    }
+
+
+def _ensure_house_folders(s3: Any, bucket: str, house_slug: str) -> None:
+    """Idempotently create the house's folder markers (visible in the console)."""
+    for prefix in _house_prefixes(house_slug).values():
+        s3.put_object(Bucket=bucket, Key=f"{prefix}/", Body=b"")
 
 
 def _s3() -> Any:
@@ -132,43 +143,90 @@ def archive_report(html: str, note: Optional[str] = None) -> Dict[str, Any]:
             "in backend/.env to enable report archiving."
         )
     state = extract_state(html)
-    prop = (state or {}).get("property", "unknown")
-    slug = re.sub(r"[^a-zA-Z0-9-]+", "-", str(prop)).strip("-").lower() or "unknown"
+    slug = _slug((state or {}).get("property", "unknown"))
     stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
 
     summary = summarize_state(state) if state else "Inspection report (no embedded state)."
     if note:
         summary = f"{summary}\n\nARCHIVE NOTE: {note}"
 
-    summary_key = f"{_knowledge_prefix()}/{slug}/{stamp}-summary.txt"
-    artifact_key = f"{_artifact_prefix()}/{slug}/{stamp}-report.html"
+    prefixes = _house_prefixes(slug)
+    summary_key = f"{prefixes['inspections']}/{stamp}-summary.txt"
+    artifact_key = f"{prefixes['artifacts']}/{stamp}-report.html"
 
     s3 = _s3()
+    _ensure_house_folders(s3, bucket, slug)
     s3.put_object(Bucket=bucket, Key=summary_key, Body=summary.encode("utf-8"),
                   ContentType="text/plain; charset=utf-8")
     s3.put_object(Bucket=bucket, Key=artifact_key, Body=html.encode("utf-8"),
                   ContentType="text/html; charset=utf-8")
     ingestion_job = _start_ingestion()
 
+    from app.report_db import record_archive
+
+    form_uuid = record_archive(
+        state, len(html.encode("utf-8")),
+        s3_summary_uri=f"s3://{bucket}/{summary_key}",
+        s3_artifact_uri=f"s3://{bucket}/{artifact_key}",
+    )
+
     return {
         "bucket": bucket,
         "summary_uri": f"s3://{bucket}/{summary_key}",
         "artifact_uri": f"s3://{bucket}/{artifact_key}",
         "ingestion_job_id": ingestion_job,
+        "form_uuid": form_uuid,
         "signed_off": bool((state or {}).get("signedOff")),
     }
 
 
-def ensure_folders() -> Dict[str, str]:
-    """Create the two folder markers in the KB bucket (idempotent)."""
+def ensure_folders(house: str = "unknown") -> Dict[str, str]:
+    """Create a house's folder markers in the KB bucket (idempotent)."""
     bucket = _bucket()
     if not bucket:
         raise RuntimeError("BEDROCK_KB_S3_BUCKET is not set.")
     s3 = _s3()
-    keys = [f"{_knowledge_prefix()}/", f"{_artifact_prefix()}/"]
-    for key in keys:
-        s3.put_object(Bucket=bucket, Key=key, Body=b"")
-    return {"bucket": bucket, "folders": ", ".join(keys)}
+    slug = _slug(house)
+    _ensure_house_folders(s3, bucket, slug)
+    return {"bucket": bucket, "folders": ", ".join(_house_prefixes(slug).values())}
+
+
+@tool
+def save_site_memory(property_name: str, note: str) -> Dict[str, Any]:
+    """Save a site memory about a house that does NOT come from an inspection.
+
+    Writes the note into the house's own folder in the knowledge base
+    (memories/<house>/notes/), where it is ingested and becomes searchable via
+    search_memory. Use for property quirks, access details, owner preferences,
+    vendor history, seasonal instructions — anything worth remembering about a
+    site outside the inspection flow.
+
+    Args:
+        property_name: House code or name the memory is about (e.g. "LBV").
+        note: The memory to store, as a clear standalone statement.
+
+    Returns:
+        Dict with status and content (S3 URI of the stored note).
+    """
+    try:
+        bucket = _bucket()
+        if not bucket:
+            return {"status": "error",
+                    "content": [{"text": "❌ BEDROCK_KB_S3_BUCKET is not configured."}]}
+        slug = _slug(property_name)
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+        key = f"{_house_prefixes(slug)['notes']}/{stamp}-note.txt"
+        body = (f"SITE MEMORY — {property_name}\n"
+                f"Recorded: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}\n\n{note}")
+        s3 = _s3()
+        _ensure_house_folders(s3, bucket, slug)
+        s3.put_object(Bucket=bucket, Key=key, Body=body.encode("utf-8"),
+                      ContentType="text/plain; charset=utf-8")
+        _start_ingestion()
+        return {"status": "success",
+                "content": [{"text": f"🧠 Site memory saved for {property_name}: s3://{bucket}/{key}"}]}
+    except Exception as exc:
+        return {"status": "error", "content": [{"text": f"❌ Save failed: {exc}"}]}
 
 
 @tool

@@ -942,6 +942,8 @@ footer{max-width:760px;margin:0 auto;padding:32px 20px 48px;text-align:center;
     },
     getState: function(){
       return {
+        formId: formId,
+        createdUtc: formCreatedUtc,
         property: 'LBV',
         signedOff: signed,
         repairs: document.getElementById('repairsNote').value,
@@ -1003,6 +1005,15 @@ footer{max-width:760px;margin:0 auto;padding:32px 20px 48px;text-align:center;
       return source.replace('<script>', function(){ return boot + '\n<script>'; });
     }
   };
+
+  /* Every form instance carries a stable UUID: minted once when a fresh form
+     opens, preserved across exports/rehydration so the database and S3
+     archive can track one inspection through its whole life. */
+  const formId = (window.__QC_STATE__ && window.__QC_STATE__.formId) ||
+    (window.crypto && crypto.randomUUID ? crypto.randomUUID() :
+      'f-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10));
+  const formCreatedUtc = (window.__QC_STATE__ && window.__QC_STATE__.createdUtc) ||
+    new Date().toISOString();
 
   /* Rehydrate a self-contained export (state baked in by exportHtml) */
   (function(){
