@@ -155,7 +155,7 @@ main{max-width:760px;margin:0 auto;padding:40px 20px 96px}
 /* ---------- Checklist item ---------- */
 .item{border-radius:var(--r-md);transition:background .2s}
 .item + .item{margin-top:2px}
-.item-row{display:flex;align-items:center;gap:14px;padding:11px 16px;cursor:default}
+.item-row{display:flex;align-items:center;gap:14px;padding:11px 16px;cursor:pointer}
 .item:hover{background:var(--surface-container-low)}
 .check-circle{
   flex:none;width:26px;height:26px;border-radius:50%;
@@ -332,16 +332,30 @@ main{max-width:760px;margin:0 auto;padding:40px 20px 96px}
   vertical-align: middle;
 }
 .badge-photo, .badge-note {
-  background: var(--surface-container);
-  color: var(--on-surface-variant);
-  padding: 2px 6px;
+  background: #17211d; /* brand green */
+  color: #fff;
+  padding: 3px 6px;
   border-radius: var(--r-sm);
   font-size: 11px;
   font-weight: 600;
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: 4px;
   animation: reveal .2s ease;
+  border: 1.5px solid var(--outline);
+}
+.badge-photo svg, .badge-note svg {
+  width: 11px;
+  height: 11px;
+  stroke: #fff;
+  stroke-width: 2.2;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.badge-photo .count {
+  line-height: 1;
+  color: #fff;
 }
 
 /* Signed off mode read-only styling */
@@ -351,7 +365,8 @@ main{max-width:760px;margin:0 auto;padding:40px 20px 96px}
 .is-signed input[type="file"],
 .is-signed .icon-btn:not(.active),
 .is-signed .summary-note,
-.is-signed #summaryNote {
+.is-signed #summaryNote,
+.is-signed .property-select-wrap {
   display: none !important;
 }
 .is-signed .note-area {
@@ -728,6 +743,13 @@ footer{max-width:760px;margin:0 auto;padding:32px 20px 48px;text-align:center;
   (function loadProperties(){
     const boot = window.__QC_STATE__;
     const preUnit = boot && boot.property;
+    if (preUnit && boot.propertyDetail) {
+      propertyList = [boot.propertyDetail];
+      propertySelect.innerHTML = '<option value="' + preUnit + '">' +
+        (boot.propertyDetail.name || preUnit) + ' (' + preUnit + ')' + '</option>';
+      propertySelect.value = preUnit;
+      applyProperty(boot.propertyDetail);
+    }
     fetch('/api/properties')
       .then(function(r){ return r.json(); })
       .then(function(data){
@@ -741,10 +763,21 @@ footer{max-width:760px;margin:0 auto;padding:32px 20px 48px;text-align:center;
         if(preUnit){
           const match = propertyList.find(function(p){ return p.unitCode === preUnit; });
           if(match){ propertySelect.value = preUnit; applyProperty(match); }
+          else if(boot.propertyDetail){
+            propertyList.push(boot.propertyDetail);
+            const opt = document.createElement('option');
+            opt.value = preUnit;
+            opt.textContent = (boot.propertyDetail.name || preUnit) + ' (' + preUnit + ')';
+            propertySelect.appendChild(opt);
+            propertySelect.value = preUnit;
+            applyProperty(boot.propertyDetail);
+          }
         }
       })
       .catch(function(){
-        propertySelect.innerHTML = '<option value="">Unable to load homes</option>';
+        if(!preUnit){
+          propertySelect.innerHTML = '<option value="">Unable to load homes</option>';
+        }
       });
   })();
 
@@ -757,6 +790,10 @@ footer{max-width:760px;margin:0 auto;padding:32px 20px 48px;text-align:center;
   (function loadInspectors(){
     const boot = window.__QC_STATE__;
     const preInspector = boot && boot.inspector;
+    if (preInspector) {
+      inspectorSelect.innerHTML = '<option value="' + preInspector + '">' + preInspector + '</option>';
+      inspectorSelect.value = preInspector;
+    }
     fetch('/api/inspectors')
       .then(function(r){ return r.json(); })
       .then(function(data){
@@ -766,10 +803,19 @@ footer{max-width:760px;margin:0 auto;padding:32px 20px 48px;text-align:center;
           inspectors.map(function(i){
             return '<option value="' + i.name + '">' + i.name + '</option>';
           }).join('');
-        if(preInspector){ inspectorSelect.value = preInspector; }
+        if(preInspector){ 
+          if(!inspectors.some(function(i){ return i.name === preInspector; })){
+            const opt = document.createElement('option');
+            opt.value = preInspector; opt.textContent = preInspector;
+            inspectorSelect.appendChild(opt);
+          }
+          inspectorSelect.value = preInspector; 
+        }
       })
       .catch(function(){
-        inspectorSelect.innerHTML = '<option value="">Unable to load inspectors</option>';
+        if(!preInspector){
+          inspectorSelect.innerHTML = '<option value="">Unable to load inspectors</option>';
+        }
       });
   })();
   inspectorSelect.addEventListener('change', update);
@@ -826,7 +872,12 @@ footer{max-width:760px;margin:0 auto;padding:32px 20px 48px;text-align:center;
     sigCtx.stroke();
     if(!sigHasInk){ sigHasInk = true; update(); }
   }
-  function sigEnd(){ sigDrawing = false; }
+  function sigEnd(){
+    if (sigDrawing) {
+      sigDrawing = false;
+      update();
+    }
+  }
 
   sigPad.addEventListener('mousedown', sigStart);
   sigPad.addEventListener('mousemove', sigMove);
@@ -901,12 +952,13 @@ footer{max-width:760px;margin:0 auto;padding:32px 20px 48px;text-align:center;
                 video.ts.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) + '</div>' +
               '<button class="del" type="button" aria-label="Remove video">&times;</button>' +
               '<video controls playsinline preload="metadata"></video>' +
-            '</div>';
+              '</div>';
           slot.querySelector('video').src = video.src;
           vdrop.style.display = 'none';
           slot.querySelector('.del').onclick = function(){
             if(video && video.objectUrl) URL.revokeObjectURL(video.objectUrl);
             video = null; card._video = null; renderVideo();
+            update();
           };
         } else {
           slot.innerHTML = '';
@@ -922,6 +974,7 @@ footer{max-width:760px;margin:0 auto;padding:32px 20px 48px;text-align:center;
           head.setAttribute('aria-expanded','true');
         }
         renderVideo();
+        update();
       }
       card._setVideo = setVideo;
       card._setSectionNote = function(text){
@@ -930,17 +983,39 @@ footer{max-width:760px;margin:0 auto;padding:32px 20px 48px;text-align:center;
           card.classList.add('open');
           head.setAttribute('aria-expanded','true');
         }
+        update();
       };
       card._getSectionNote = function(){ return sectionNote.value; };
+
+      sectionNote.addEventListener('input', update);
 
       vdrop.addEventListener('click', function(){ vinput.click(); });
       vdrop.addEventListener('keydown', function(e){ if(e.key==='Enter'||e.key===' '){e.preventDefault();vinput.click();} });
       vinput.addEventListener('change', function(){
         const f = vinput.files && vinput.files[0];
         if(!f) return;
-        const url = URL.createObjectURL(f);
-        setVideo(url, 'user', url);
         vinput.value = '';
+        // Show an instant local preview while the upload runs.
+        const localUrl = URL.createObjectURL(f);
+        setVideo(localUrl, 'user', localUrl);
+        // Upload to the SAME endpoint the agent uses; it compresses server-side and
+        // returns a small /workspace/... URL. Swap the preview for that URL so the
+        // exported form embeds a short link, never the raw video bytes.
+        const section = card.dataset.id || '';
+        fetch('/api/inspection/video?section=' + encodeURIComponent(section) + '&duration=0', {
+          method: 'POST',
+          headers: { 'Content-Type': f.type || 'video/webm' },
+          body: f
+        })
+        .then(function(r){ return r.json(); })
+        .then(function(info){
+          if (info && info.url) {
+            // Replaces the blob preview; setVideo revokes the old objectUrl.
+            setVideo(info.url, 'user');
+            update();
+          }
+        })
+        .catch(function(){ /* keep the local preview; offline/degraded is acceptable */ });
       });
     }
 
@@ -992,7 +1067,7 @@ footer{max-width:760px;margin:0 auto;padding:32px 20px 48px;text-align:center;
     if (pCount > 0) {
       const pb = document.createElement('span');
       pb.className = 'badge-photo';
-      pb.innerHTML = '📷 ' + pCount;
+      pb.innerHTML = CAMERA_ICON + '<span class="count">' + pCount + '</span>';
       badgesContainer.appendChild(pb);
     }
     
@@ -1002,7 +1077,7 @@ footer{max-width:760px;margin:0 auto;padding:32px 20px 48px;text-align:center;
     if (noteVal.length > 0) {
       const nb = document.createElement('span');
       nb.className = 'badge-note';
-      nb.innerHTML = '📝';
+      nb.innerHTML = NOTE_ICON;
       badgesContainer.appendChild(nb);
     }
   }
@@ -1109,7 +1184,10 @@ footer{max-width:760px;margin:0 auto;padding:32px 20px 48px;text-align:center;
         btn.onclick = function(){
           const id = btn.getAttribute('data-pid');
           const i = photos.findIndex(function(p){ return String(p.id) === id; });
-          if(i > -1){ photos.splice(i,1); renderPhotos(); updateItemBadges(item); }
+          if(i > -1){
+            photos.splice(i,1); renderPhotos(); updateItemBadges(item);
+            update();
+          }
         };
       });
     }
@@ -1132,6 +1210,7 @@ footer{max-width:760px;margin:0 auto;padding:32px 20px 48px;text-align:center;
       detail.classList.add('open');
       renderPhotos();
       updateItemBadges(item);
+      update();
     }
     item._addPhoto = addPhoto;
     item._photos = photos;
@@ -1140,11 +1219,20 @@ footer{max-width:760px;margin:0 auto;padding:32px 20px 48px;text-align:center;
       const open = detail.classList.toggle('open');
       if(open && focusEl) focusEl.focus();
     }
-    camBtn.addEventListener('click', function(){
+    const row = item.querySelector('.item-row');
+    row.addEventListener('click', function(e){
+      if (e.target.closest('.check-circle') || e.target.closest('.icon-btn') || e.target.closest('input')) {
+        return;
+      }
+      toggleDetail(noteArea);
+    });
+    camBtn.addEventListener('click', function(e){
+      e.stopPropagation();
       if(!detail.classList.contains('open')) detail.classList.add('open');
       fileInput.click();
     });
-    noteBtn.addEventListener('click', function(){
+    noteBtn.addEventListener('click', function(e){
+      e.stopPropagation();
       if(detail.classList.contains('open') && document.activeElement === noteArea){
         detail.classList.remove('open');
       } else {
@@ -1160,18 +1248,37 @@ footer{max-width:760px;margin:0 auto;padding:32px 20px 48px;text-align:center;
       const f = fileInput.files && fileInput.files[0];
       if(!f) return;
       const reader = new FileReader();
-      reader.onload = function(e){ addPhoto(e.target.result, selectedTag, 'user'); };
+      reader.onload = function(e){
+        const img = new Image();
+        img.onload = function(){
+          const maxDim = 640;
+          const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.round(img.width * scale);
+          canvas.height = Math.round(img.height * scale);
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            addPhoto(canvas.toDataURL('image/jpeg', 0.4), selectedTag, 'user');
+          } else {
+            addPhoto(e.target.result, selectedTag, 'user');
+          }
+        };
+        img.src = e.target.result;
+      };
       reader.readAsDataURL(f);
       fileInput.value = '';
     });
     noteArea.addEventListener('input', function(){
       noteBtn.classList.toggle('active', noteArea.value.trim().length > 0);
       updateItemBadges(item);
+      update();
     });
 
     // Check toggle
     const circle = item.querySelector('.check-circle');
-    circle.addEventListener('click', function(){
+    circle.addEventListener('click', function(e){
+      e.stopPropagation();
       circle.classList.toggle('checked');
       item.classList.toggle('checked');
       update();
@@ -1231,6 +1338,9 @@ footer{max-width:760px;margin:0 auto;padding:32px 20px 48px;text-align:center;
       } else {
         chip.classList.remove('ready'); statusText.textContent = 'Turnover in progress';
       }
+    }
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage({ type: 'qc-form-changed' }, '*');
     }
   }
 
@@ -1375,15 +1485,45 @@ footer{max-width:760px;margin:0 auto;padding:32px 20px 48px;text-align:center;
        from a Slack download — rehydrates a fully working copy of the form. */
     exportHtml: async function(){
       async function toDataUrl(src){
-        if(!src || src.indexOf('data:') === 0) return src;
+        if(!src) return src;
         try{
+          // Already a data URL, let's compress it if it's large
+          if(src.indexOf('data:image/') === 0) {
+            return await new Promise(function(resolve){
+              const img = new Image();
+              img.onload = function(){
+                const maxDim = 640;
+                if (Math.max(img.width, img.height) <= maxDim) {
+                  resolve(src);
+                  return;
+                }
+                const scale = maxDim / Math.max(img.width, img.height);
+                const canvas = document.createElement('canvas');
+                canvas.width = Math.round(img.width * scale);
+                canvas.height = Math.round(img.height * scale);
+                const ctx = canvas.getContext('2d');
+                if (ctx) {
+                  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                  resolve(canvas.toDataURL('image/jpeg', 0.4));
+                } else {
+                  resolve(src);
+                }
+              };
+              img.onerror = function(){ resolve(src); };
+              img.src = src;
+            });
+          }
           const blob = await (await fetch(src)).blob();
-          return await new Promise(function(resolve, reject){
+          const base64 = await new Promise(function(resolve, reject){
             const r = new FileReader();
             r.onload = function(){ resolve(r.result); };
             r.onerror = reject;
             r.readAsDataURL(blob);
           });
+          if(typeof base64 === 'string' && base64.indexOf('data:image/') === 0) {
+            return await toDataUrl(base64);
+          }
+          return base64;
         }catch(e){ return src; }
       }
       const state = window.qcInspection.getState();
@@ -1391,7 +1531,13 @@ footer{max-width:760px;margin:0 auto;padding:32px 20px 48px;text-align:center;
         for(const p of it.photos) p.src = await toDataUrl(p.src);
       }
       for(const s of state.sections){
-        if(s.video) s.video.src = await toDataUrl(s.video.src);
+        // Videos stay as /workspace/... URLs — never base64-embedded (keeps the
+        // export small). Only leftover blob: previews (failed upload) are dropped
+        // entirely so the export carries no raw video bytes AND rehydration does
+        // not try to render a video card with a null src.
+        if(s.video && s.video.src && s.video.src.indexOf('blob:') === 0){
+          s.video = null;
+        }
       }
       let source = await (await fetch(location.pathname)).text();
       // Drop any previous baked-in state so re-exports stay clean. The "= \{"
@@ -1474,6 +1620,11 @@ footer{max-width:760px;margin:0 auto;padding:32px 20px 48px;text-align:center;
       const who = boot.inspector || 'Inspector';
       if(phInspector) phInspector.textContent = who;
       summaryNote.textContent = 'Signed off by ' + who;
+    }
+    document.getElementById('repairsNote').addEventListener('input', update);
+    const tempInput = document.querySelector('.temp-input');
+    if (tempInput) {
+      tempInput.addEventListener('input', update);
     }
   })();
 })();
