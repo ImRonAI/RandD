@@ -1,5 +1,25 @@
-import { AudioLinesIcon, BrainCircuitIcon, PhoneIcon, PhoneOffIcon } from "lucide-react";
-import { useState } from "react";
+import {
+  AudioLinesIcon,
+  BrainCircuitIcon,
+  CameraIcon,
+  CameraOffIcon,
+  PhoneIcon,
+  PhoneOffIcon,
+  SwitchCameraIcon,
+  VideoIcon,
+  XIcon,
+} from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import {
+  CameraSelector,
+  CameraSelectorContent,
+  CameraSelectorEmpty,
+  CameraSelectorInput,
+  CameraSelectorItem,
+  CameraSelectorList,
+  CameraSelectorTrigger,
+  cameraLabel,
+} from "@/components/ai-elements/camera-selector";
 import {
   ModelSelector,
   ModelSelectorContent,
@@ -60,12 +80,175 @@ const StatusOrb = ({ state }: { state: string }) => (
   />
 );
 
-/** Voice dock: live status orb, session controls, voice picker, rolling transcript. */
-export const VoiceDock = ({ agent }: { agent: LiveAgent }) => {
-  const [transcriptTime, setTranscriptTime] = useState(0);
+/**
+ * Camera controls: live preview, on/off, a front(selfie)/rear(non-selfie)
+ * toggle, and a full camera picker. Works on any device — laptop/desktop
+ * webcams, tablet/phone front & rear lenses, USB and continuity cameras.
+ * Rear ("environment") is the default so photos/videos frame the property.
+ */
+const CameraControls = ({ agent }: { agent: LiveAgent }) => {
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) {
+      return;
+    }
+    video.srcObject = agent.cameraStream;
+    if (agent.cameraStream) {
+      void video.play().catch(() => {
+        // autoplay can be rejected until a user gesture; preview resumes on next start
+      });
+    }
+  }, [agent.cameraStream]);
+
+  const facing = agent.cameraFacing;
 
   return (
-    <aside className="flex w-80 shrink-0 flex-col gap-4 overflow-y-auto border-l bg-sidebar p-4">
+    <div className="flex flex-col gap-2 rounded-lg border bg-background/50 p-3">
+      <div className="flex items-center justify-between">
+        <p className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+          Camera
+        </p>
+        {agent.cameraActive && (
+          <span className="text-[10px] text-muted-foreground">
+            {facing === "user" ? "Front · selfie" : "Rear · environment"}
+            {agent.recording && " · recording"}
+          </span>
+        )}
+      </div>
+
+      {/* Live preview (mirrored only for the selfie/front camera) */}
+      <div className="relative aspect-video w-full overflow-hidden rounded-md bg-muted">
+        {agent.cameraActive ? (
+          <video
+            className={cn(
+              "h-full w-full object-cover",
+              facing === "user" && "-scale-x-100"
+            )}
+            muted
+            playsInline
+            ref={videoRef}
+          />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+            <CameraOffIcon className="size-6" />
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-center gap-2">
+        {agent.cameraActive ? (
+          <Button
+            className="flex-1"
+            onClick={() => agent.stopCamera()}
+            size="sm"
+            variant="secondary"
+          >
+            <CameraOffIcon className="size-4" />
+            Turn off
+          </Button>
+        ) : (
+          <Button
+            className="flex-1"
+            onClick={() => void agent.startCamera()}
+            size="sm"
+          >
+            <CameraIcon className="size-4" />
+            Turn on
+          </Button>
+        )}
+        <Button
+          aria-label="Flip camera"
+          disabled={!agent.cameraActive}
+          onClick={() => void agent.flipCamera()}
+          size="sm"
+          title="Switch front / rear camera"
+          variant="outline"
+        >
+          <SwitchCameraIcon className="size-4" />
+        </Button>
+        <Button
+          aria-label="Take a photo"
+          disabled={!agent.cameraActive}
+          onClick={() => agent.snapPhoto()}
+          size="sm"
+          title="Capture a photo now"
+          variant="outline"
+        >
+          <VideoIcon className="size-4" />
+        </Button>
+      </div>
+
+      {/* Front / rear (selfie / non-selfie) segmented toggle */}
+      <div className="grid grid-cols-2 gap-1 rounded-md bg-muted p-1">
+        <Button
+          className="h-7"
+          onClick={() => void agent.setCameraFacing("environment")}
+          size="sm"
+          variant={facing === "environment" ? "secondary" : "ghost"}
+        >
+          Rear
+        </Button>
+        <Button
+          className="h-7"
+          onClick={() => void agent.setCameraFacing("user")}
+          size="sm"
+          variant={facing === "user" ? "secondary" : "ghost"}
+        >
+          Front (selfie)
+        </Button>
+      </div>
+
+      {/* Exact camera picker — any lens/webcam on the device */}
+      <CameraSelector
+        onValueChange={(value) => value && void agent.selectCameraDevice(value)}
+        value={agent.cameraDeviceId}
+      >
+        <CameraSelectorTrigger className="w-full justify-start" size="sm">
+          <CameraIcon className="size-4" />
+          <span className="truncate">Choose camera…</span>
+        </CameraSelectorTrigger>
+        <CameraSelectorContent title="Choose a camera">
+          <CameraSelectorInput />
+          <CameraSelectorList>
+            {(devices) => (
+              <>
+                <CameraSelectorEmpty />
+                {devices.map((device, index) => (
+                  <CameraSelectorItem key={device.deviceId} value={device.deviceId}>
+                    <CameraIcon className="size-4 shrink-0 text-muted-foreground" />
+                    <span className="truncate">{cameraLabel(device, index)}</span>
+                  </CameraSelectorItem>
+                ))}
+              </>
+            )}
+          </CameraSelectorList>
+        </CameraSelectorContent>
+      </CameraSelector>
+    </div>
+  );
+};
+
+/**
+ * Voice + camera dock: live status orb, session controls, voice picker, camera
+ * controls, rolling transcript. On desktop it's a fixed right sidebar; on
+ * mobile it becomes a slide-in overlay panel toggled from the header so the
+ * main content (checklist / chat) keeps the full narrow screen.
+ */
+export const VoiceDock = ({
+  agent,
+  open = false,
+  onClose,
+}: {
+  agent: LiveAgent;
+  open?: boolean;
+  onClose?: () => void;
+}) => {
+  const [transcriptTime, setTranscriptTime] = useState(0);
+
+  const body = (
+    <>
       <div className="flex flex-col items-center gap-2">
         <StatusOrb state={agent.personaState} />
         <p className="font-medium text-sm">{agent.agentCard?.name ?? "RandD Live"}</p>
@@ -171,6 +354,8 @@ export const VoiceDock = ({ agent }: { agent: LiveAgent }) => {
         </p>
       )}
 
+      <CameraControls agent={agent} />
+
       <div className="min-h-0 flex-1">
         <p className="mb-2 font-medium text-muted-foreground text-xs uppercase tracking-wide">
           Live transcript
@@ -204,6 +389,36 @@ export const VoiceDock = ({ agent }: { agent: LiveAgent }) => {
           </Transcription>
         )}
       </div>
-    </aside>
+    </>
+  );
+
+  return (
+    <>
+      {/* Desktop: fixed right sidebar, always visible at md and up. */}
+      <aside className="hidden w-80 shrink-0 flex-col gap-4 overflow-y-auto border-l bg-sidebar p-4 md:flex">
+        {body}
+      </aside>
+
+      {/* Mobile: slide-in overlay toggled from the header (md:hidden). */}
+      {open && (
+        <div className="md:hidden">
+          <button
+            aria-label="Close voice and camera panel"
+            className="fixed inset-0 z-40 bg-black/40"
+            onClick={onClose}
+            type="button"
+          />
+          <aside className="fixed inset-y-0 right-0 z-50 flex w-[86vw] max-w-sm flex-col gap-4 overflow-y-auto border-l bg-sidebar p-4 shadow-xl">
+            <div className="flex items-center justify-between">
+              <p className="font-medium text-sm">Voice &amp; Camera</p>
+              <Button aria-label="Close" onClick={onClose} size="icon" variant="ghost">
+                <XIcon className="size-4" />
+              </Button>
+            </div>
+            {body}
+          </aside>
+        </div>
+      )}
+    </>
   );
 };

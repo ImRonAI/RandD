@@ -64,6 +64,7 @@ export const useLiveAgent = () => {
   const [micDeviceId, setMicDeviceId] = useState<string | undefined>();
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraDeviceId, setCameraDeviceId] = useState<string | undefined>();
+  const [cameraFacing, setCameraFacingState] = useState<"environment" | "user">("environment");
   const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
   const [recording, setRecording] = useState(false);
   const [agentCard, setAgentCard] = useState<AgentCard | null>(null);
@@ -80,6 +81,7 @@ export const useLiveAgent = () => {
     stop: () => void;
     snap: () => boolean;
     flip: () => Promise<void>;
+    setFacing: (facing: "environment" | "user") => Promise<void>;
     record: (durationSec: number, section: string) => Promise<boolean>;
   } | null>(null);
   const handledCameraCallsRef = useRef<Set<string>>(new Set());
@@ -428,6 +430,8 @@ export const useLiveAgent = () => {
               if (action === "stop") camera?.stop();
               if (action === "snap") camera?.snap();
               if (action === "flip") void camera?.flip();
+              if (action === "rear") void camera?.setFacing("environment");
+              if (action === "front") void camera?.setFacing("user");
             }
           }
           // take_video: record camera + mic in the browser, upload, let the
@@ -625,6 +629,9 @@ export const useLiveAgent = () => {
   }, []);
 
   /** Start the device camera (browser getUserMedia) and stream frames to the model. */
+  // Non-selfie (rear/"environment") is the default so photos/videos frame the
+  // property, not the inspector. Kept as a ref for synchronous reads inside
+  // startCamera and mirrored to cameraFacing state for the UI.
   const cameraFacingRef = useRef<"environment" | "user">("environment");
   const startCamera = useCallback(
     async (deviceId?: string) => {
@@ -641,6 +648,14 @@ export const useLiveAgent = () => {
       cameraRef.current = capture;
       setCameraStream(capture.mediaStream);
       setCameraActive(true);
+      // Reflect the facing the stream actually settled on (a picked deviceId
+      // may resolve to either camera; read it back off the track when we can).
+      const track = capture.mediaStream?.getVideoTracks()[0];
+      const settledFacing = track?.getSettings?.().facingMode;
+      if (settledFacing === "user" || settledFacing === "environment") {
+        cameraFacingRef.current = settledFacing;
+        setCameraFacingState(settledFacing);
+      }
     },
     [cameraDeviceId, sendRaw]
   );
@@ -652,6 +667,7 @@ export const useLiveAgent = () => {
     setCameraStream(null);
   }, []);
 
+  /** Pick a specific camera by deviceId (any webcam / built-in / USB / phone lens). */
   const selectCameraDevice = useCallback(
     async (deviceId: string) => {
       setCameraDeviceId(deviceId);
@@ -689,14 +705,33 @@ export const useLiveAgent = () => {
     return Boolean(frame);
   }, [sendRaw]);
 
-  /** Switch between front and rear cameras (agent "flip" or manual). */
+  /** Switch between front (selfie/"user") and rear ("environment") cameras
+   *  (agent "flip" or manual). Clears any explicit deviceId so the facing
+   *  constraint drives selection. */
   const flipCamera = useCallback(async () => {
-    cameraFacingRef.current = cameraFacingRef.current === "environment" ? "user" : "environment";
+    const next = cameraFacingRef.current === "environment" ? "user" : "environment";
+    cameraFacingRef.current = next;
+    setCameraFacingState(next);
     setCameraDeviceId(undefined);
     if (cameraRef.current) {
       await startCamera(undefined);
     }
   }, [startCamera]);
+
+  /** Set camera facing explicitly to "environment" (rear, non-selfie — default)
+   *  or "user" (front/selfie). Restarts the stream when live. */
+  const setCameraFacing = useCallback(
+    async (facing: "environment" | "user") => {
+      if (facing === cameraFacingRef.current && !cameraDeviceId) return;
+      cameraFacingRef.current = facing;
+      setCameraFacingState(facing);
+      setCameraDeviceId(undefined);
+      if (cameraRef.current) {
+        await startCamera(undefined);
+      }
+    },
+    [cameraDeviceId, startCamera]
+  );
 
   /** Latest camera frame (base64 JPEG) — used to pin photos onto checklist items. */
   const getLatestFrame = useCallback(() => lastFrameRef.current, []);
@@ -732,9 +767,10 @@ export const useLiveAgent = () => {
       stop: stopCamera,
       snap: snapPhoto,
       flip: flipCamera,
+      setFacing: setCameraFacing,
       record: recordClip,
     };
-  }, [startCamera, stopCamera, snapPhoto, flipCamera, recordClip]);
+  }, [startCamera, stopCamera, snapPhoto, flipCamera, setCameraFacing, recordClip]);
 
   const selectMicDevice = useCallback(
     async (deviceId: string) => {
@@ -818,11 +854,13 @@ export const useLiveAgent = () => {
     // camera
     cameraActive,
     cameraDeviceId,
+    cameraFacing,
     cameraStream,
     recording,
     startCamera,
     stopCamera,
     selectCameraDevice,
+    setCameraFacing,
     snapPhoto,
     flipCamera,
     getLatestFrame,

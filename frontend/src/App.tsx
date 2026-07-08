@@ -3,6 +3,7 @@ import {
   ClipboardCheckIcon,
   MessageSquareTextIcon,
   PanelRightIcon,
+  SlidersHorizontalIcon,
 } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -17,13 +18,14 @@ const App = () => {
   const agent = useLiveAgent();
   const [agentPanelOpen, setAgentPanelOpen] = useState(false);
   const [inspectionOpen, setInspectionOpen] = useState(false);
+  const [dockOpen, setDockOpen] = useState(false);
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex h-14 shrink-0 items-center justify-between border-b px-4">
-        <div className="flex items-center gap-2">
-          <span className="font-semibold">RandD Live</span>
-          <span className="text-muted-foreground text-xs">
+      <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b px-3 sm:px-4">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="shrink-0 font-semibold">RandD Live</span>
+          <span className="hidden truncate text-muted-foreground text-xs sm:inline">
             {agent.models.find((entry) => entry.id === agent.model)?.name ??
               agent.agentCard?.model ??
               "Gemini Live"}{" "}
@@ -39,14 +41,14 @@ const App = () => {
             </span>
           </span>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1">
           <Button
             onClick={() => agent.setMode("text")}
             size="sm"
             variant={agent.mode === "text" ? "secondary" : "ghost"}
           >
             <MessageSquareTextIcon className="size-4" />
-            Text
+            <span className="hidden sm:inline">Text</span>
           </Button>
           <Button
             onClick={() => agent.setMode("audio")}
@@ -54,7 +56,7 @@ const App = () => {
             variant={agent.mode === "audio" ? "secondary" : "ghost"}
           >
             <AudioLinesIcon className="size-4" />
-            Voice
+            <span className="hidden sm:inline">Voice</span>
           </Button>
           <Button
             onClick={() => setInspectionOpen((open) => !open)}
@@ -62,7 +64,17 @@ const App = () => {
             variant={inspectionOpen ? "secondary" : "ghost"}
           >
             <ClipboardCheckIcon className="size-4" />
-            Inspection
+            <span className="hidden sm:inline">Inspection</span>
+          </Button>
+          <Button
+            aria-label="Voice and camera controls"
+            className="md:hidden"
+            onClick={() => setDockOpen((open) => !open)}
+            size="sm"
+            variant={dockOpen ? "secondary" : "ghost"}
+          >
+            <SlidersHorizontalIcon className="size-4" />
+            <span className="hidden sm:inline">Voice/Camera</span>
           </Button>
           <Button
             onClick={() => setAgentPanelOpen((open) => !open)}
@@ -70,7 +82,7 @@ const App = () => {
             variant={agentPanelOpen ? "secondary" : "ghost"}
           >
             <PanelRightIcon className="size-4" />
-            Agent
+            <span className="hidden sm:inline">Agent</span>
           </Button>
         </div>
       </header>
@@ -93,7 +105,11 @@ const App = () => {
           {!inspectionOpen && <ChatThread agent={agent} />}
           <Composer agent={agent} />
         </main>
-        <VoiceDock agent={agent} />
+        <VoiceDock
+          agent={agent}
+          onClose={() => setDockOpen(false)}
+          open={dockOpen}
+        />
         {agentPanelOpen && <AgentPanel agent={agent} />}
       </div>
     </div>
