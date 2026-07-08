@@ -56,6 +56,11 @@ export const useAudioDevices = () => {
   const [hasPermission, setHasPermission] = useState(false);
 
   const loadDevicesWithoutPermission = useCallback(async () => {
+    if (!navigator.mediaDevices) {
+      setError("Microphone requires a secure context (HTTPS) or localhost.");
+      setLoading(false);
+      return;
+    }
     try {
       setLoading(true);
       setError(null);
@@ -81,6 +86,11 @@ export const useAudioDevices = () => {
 
   const loadDevicesWithPermission = useCallback(async () => {
     if (loading) {
+      return;
+    }
+
+    if (!navigator.mediaDevices) {
+      setError("Microphone requires a secure context (HTTPS) or localhost.");
       return;
     }
 
@@ -121,6 +131,9 @@ export const useAudioDevices = () => {
   }, [loadDevicesWithoutPermission]);
 
   useEffect(() => {
+    if (!navigator.mediaDevices) {
+      return;
+    }
     const handleDeviceChange = () => {
       if (hasPermission) {
         loadDevicesWithPermission();

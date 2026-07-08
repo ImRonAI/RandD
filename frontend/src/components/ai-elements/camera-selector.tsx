@@ -59,6 +59,11 @@ export const useVideoDevices = () => {
   const [hasPermission, setHasPermission] = useState(false);
 
   const loadWithoutPermission = useCallback(async () => {
+    if (!navigator.mediaDevices) {
+      setError("Camera requires a secure context (HTTPS) or localhost.");
+      setLoading(false);
+      return;
+    }
     try {
       setLoading(true);
       setError(null);
@@ -73,6 +78,10 @@ export const useVideoDevices = () => {
 
   const loadDevices = useCallback(async () => {
     if (loading) {
+      return;
+    }
+    if (!navigator.mediaDevices) {
+      setError("Camera requires a secure context (HTTPS) or localhost.");
       return;
     }
     try {
@@ -97,6 +106,9 @@ export const useVideoDevices = () => {
   }, [loadWithoutPermission]);
 
   useEffect(() => {
+    if (!navigator.mediaDevices) {
+      return;
+    }
     const onChange = () => {
       if (hasPermission) {
         loadDevices();

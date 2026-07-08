@@ -97,7 +97,7 @@ const CameraDeviceSelect = ({ agent }: { agent: LiveAgent }) => {
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
 
   useEffect(() => {
-    if (!agent.cameraActive) return;
+    if (!agent.cameraActive || !navigator.mediaDevices) return;
     navigator.mediaDevices
       .enumerateDevices()
       .then((all) => setDevices(all.filter((d) => d.kind === "videoinput")))
@@ -108,7 +108,7 @@ const CameraDeviceSelect = ({ agent }: { agent: LiveAgent }) => {
   return (
     <select
       aria-label="Select camera"
-      className="h-8 max-w-40 truncate rounded-md bg-transparent text-muted-foreground text-xs outline-none"
+      className="h-8 max-w-24 sm:max-w-40 truncate rounded-md bg-transparent text-white/80 hover:bg-white/10 hover:text-white px-2 py-1 border-none outline-none text-xs"
       onChange={(event) => agent.selectCameraDevice(event.target.value)}
       value={agent.cameraDeviceId ?? ""}
     >
@@ -237,7 +237,7 @@ export const Composer = ({ agent }: { agent: LiveAgent }) => {
       <PromptQueue agent={agent} />
       <PromptInput
         accept="image/*"
-        className="mx-auto w-full max-w-3xl"
+        className="mx-auto w-full max-w-3xl bg-primary-container border-primary-container text-white rounded-xl shadow-md p-1"
         globalDrop
         multiple
         onSubmit={handleSubmit}
@@ -247,6 +247,7 @@ export const Composer = ({ agent }: { agent: LiveAgent }) => {
         </PromptInputHeader>
         <PromptInputBody>
           <PromptInputTextarea
+            className="text-white placeholder:text-white/50 focus:text-white py-3 px-4 min-h-[50px]"
             onChange={(event) => setText(event.target.value)}
             placeholder={
               agent.status === "connected"
@@ -259,13 +260,13 @@ export const Composer = ({ agent }: { agent: LiveAgent }) => {
         <PromptInputFooter>
           <PromptInputTools>
             <PromptInputActionMenu>
-              <PromptInputActionMenuTrigger />
+              <PromptInputActionMenuTrigger className="text-white/80 hover:bg-white/10 hover:text-white" />
               <PromptInputActionMenuContent>
                 <PromptInputActionAddAttachments label="Attach images" />
               </PromptInputActionMenuContent>
             </PromptInputActionMenu>
             <SpeechInput
-              className="shrink-0"
+              className="shrink-0 text-white/80 hover:bg-white/10 hover:text-white"
               onTranscriptionChange={setText}
               size="icon-sm"
               variant="ghost"
@@ -274,30 +275,36 @@ export const Composer = ({ agent }: { agent: LiveAgent }) => {
               disabled={agent.status !== "connected"}
               onClick={toggleMic}
               variant={agent.micActive ? "default" : "ghost"}
+              className="text-white/80 hover:bg-white/10 hover:text-white"
             >
               {agent.micActive ? (
                 <MicOffIcon className="size-4" />
               ) : (
                 <MicIcon className="size-4" />
               )}
-              <span>{agent.micActive ? "Mute" : "Mic"}</span>
+              <span className="hidden sm:inline">{agent.micActive ? "Mute" : "Mic"}</span>
             </PromptInputButton>
             <PromptInputButton
               disabled={agent.status !== "connected"}
               onClick={toggleCamera}
               variant={agent.cameraActive ? "default" : "ghost"}
+              className="text-white/80 hover:bg-white/10 hover:text-white"
             >
               {agent.cameraActive ? (
                 <VideoOffIcon className="size-4" />
               ) : (
                 <VideoIcon className="size-4" />
               )}
-              <span>{agent.cameraActive ? "Stop cam" : "Camera"}</span>
+              <span className="hidden sm:inline">{agent.cameraActive ? "Stop cam" : "Camera"}</span>
             </PromptInputButton>
             {agent.cameraActive && (
-              <PromptInputButton onClick={() => agent.snapPhoto()} variant="ghost">
+              <PromptInputButton
+                onClick={() => agent.snapPhoto()}
+                variant="ghost"
+                className="text-white/80 hover:bg-white/10 hover:text-white"
+              >
                 <ApertureIcon className="size-4" />
-                <span>Snap</span>
+                <span className="hidden sm:inline">Snap</span>
               </PromptInputButton>
             )}
             <CameraDeviceSelect agent={agent} />
@@ -308,7 +315,7 @@ export const Composer = ({ agent }: { agent: LiveAgent }) => {
               value={agent.micDeviceId}
             >
               <MicSelectorTrigger
-                className="h-8 max-w-48 border-none text-muted-foreground"
+                className="h-8 max-w-24 sm:max-w-48 border-none text-white/80 hover:bg-white/10 hover:text-white"
                 size="sm"
                 variant="ghost"
               >
@@ -322,7 +329,7 @@ export const Composer = ({ agent }: { agent: LiveAgent }) => {
                       <MicSelectorEmpty>No microphones found.</MicSelectorEmpty>
                       {devices.map((device) => (
                         <MicSelectorItem
-                          key={device.deviceId}
+                           key={device.deviceId}
                           value={device.deviceId}
                         >
                           <MicSelectorLabel device={device} />
@@ -337,6 +344,7 @@ export const Composer = ({ agent }: { agent: LiveAgent }) => {
           <PromptInputSubmit
             disabled={agent.status !== "connected" && !text.trim()}
             status={agent.chatStatus === "ready" ? undefined : agent.chatStatus}
+            className="bg-secondary-container text-on-secondary-container hover:bg-secondary-container/90 rounded-full"
           />
         </PromptInputFooter>
       </PromptInput>

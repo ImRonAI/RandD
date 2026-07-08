@@ -65,20 +65,16 @@ import { cn } from "@/lib/utils";
  * whose WebGL2/WASM init hard-locks the main thread in this environment
  * (remote .riv blob + webgl2 context), freezing the whole app.
  */
-const StatusOrb = ({ state }: { state: string }) => (
-  <div
-    aria-label={`agent ${state}`}
-    className={cn(
-      "size-24 rounded-full border-4 transition-all duration-500",
-      state === "listening" && "animate-pulse border-emerald-400 bg-emerald-400/20",
-      state === "thinking" && "animate-pulse border-amber-400 bg-amber-400/20",
-      state === "speaking" && "animate-pulse border-sky-400 bg-sky-400/30",
-      state === "asleep" && "border-muted bg-muted/30",
-      state === "idle" && "border-muted-foreground/40 bg-muted/50"
-    )}
-    role="img"
-  />
-);
+const StatusOrb = ({ state }: { state: string }) => {
+  const isAnimating = state === "listening" || state === "speaking" || state === "thinking";
+  return (
+    <div className="liquid-orb-container" role="img" aria-label={`agent ${state}`}>
+      <div className={cn("liquid-orb-ripple", isAnimating && "active")} />
+      <div className={cn("liquid-orb-ripple active-delay", isAnimating && "active")} />
+      <div className="liquid-orb" data-state={state} />
+    </div>
+  );
+};
 
 /**
  * Camera controls: live preview, on/off, a front(selfie)/rear(non-selfie)

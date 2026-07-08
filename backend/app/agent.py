@@ -30,7 +30,7 @@ from app.vision_tools import yolo_vision
 # Override with GEMINI_LIVE_MODEL if needed.
 DEFAULT_MODEL_ID = "gemini-3.1-flash-live-preview"
 
-DEFAULT_PROVIDER = "openai"
+DEFAULT_PROVIDER = os.getenv("STRQC_BIDI_PROVIDER", "gemini")
 
 # The inspector's input device is ALWAYS the browser microphone, which streams
 # PCM16 at this rate (frontend MIC_SAMPLE_RATE in use-live-agent.ts). Every bidi
