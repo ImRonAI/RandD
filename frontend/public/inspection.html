@@ -699,9 +699,14 @@ footer{max-width:760px;margin:0 auto;padding:32px 20px 48px;text-align:center;
   const chip = document.getElementById('statusChip');
   const statusText = document.getElementById('statusText');
   const summarySub = document.getElementById('summarySub');
-  const btnReady = document.getElementById('btnReady');
-  const summaryNote = document.getElementById('summaryNote');
-  let signed = false;
+   const btnReady = document.getElementById('btnReady');
+   const summaryNote = document.getElementById('summaryNote');
+   let signed = false;
+   // Signature state referenced by update(); declared here (before
+   // loadProperties() runs update() on boot) to avoid a temporal-dead-zone
+   // ReferenceError that would abort the whole script and leave the form empty.
+   const sigHint = document.getElementById('sigHint');
+   let sigHasInk = false;
 
   /* ---------- Property + inspector selection state ---------- */
   const propertySelect = document.getElementById('propertySelect');
@@ -820,13 +825,13 @@ footer{max-width:760px;margin:0 auto;padding:32px 20px 48px;text-align:center;
   })();
   inspectorSelect.addEventListener('change', update);
 
-  /* ---------- Auditor signature pad ---------- */
-  const sigPad = document.getElementById('sigPad');
-  const sigClear = document.getElementById('sigClear');
-  const sigHint = document.getElementById('sigHint');
-  const sigCtx = sigPad.getContext('2d');
-  let sigHasInk = false;
-  let sigDrawing = false;
+   /* ---------- Auditor signature pad ---------- */
+   const sigPad = document.getElementById('sigPad');
+   const sigClear = document.getElementById('sigClear');
+   const sigCtx = sigPad.getContext('2d');
+   // sigHint and sigHasInk are declared earlier (before loadProperties) so
+   // update() can reference them during boot without a TDZ error.
+   let sigDrawing = false;
 
   function sigResize(){
     // Preserve current ink across a resize by snapshotting to a data URL.
