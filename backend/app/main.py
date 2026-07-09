@@ -26,7 +26,7 @@ WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 app = FastAPI(title="RandD Live Backend")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://44-193-208-77.sslip.io", "http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
