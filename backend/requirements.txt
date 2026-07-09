@@ -15,3 +15,4 @@ opencv-python-headless>=4.8.0,<5.0.0
 passlib[bcrypt]>=1.7.4,<2.0.0     # password hashing (bcrypt backend)
 bcrypt>=4.0.0,<4.1.0              # pin: passlib 1.7.4 is incompatible with bcrypt>=4.1 (72-byte / __about__ breakage)
 pyjwt>=2.8.0,<3.0.0               # WS short-lived token; sessions may use cookie+itsdangerous instead
+python-multipart>=0.0.9,<1.0.0   # multipart/form-data for CSV onboarding uploads

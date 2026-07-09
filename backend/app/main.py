@@ -6,7 +6,17 @@ from typing import Any
 import sqlite3
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -186,6 +196,60 @@ async def admin_create_tenant_user(
 
     user = await run_in_threadpool(_create)
     return {"user": _user_public({**user, "is_platform_admin": user["is_platform_admin"]})}
+
+
+# ---------------------------------------------------------------------------
+# CSV onboarding import (tenant-scoped)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_import_tenant(user: dict[str, Any], target_tenant_id: int | None) -> int:
+    """Determine which tenant an import targets.
+
+    Tenant users always import into their own tenant. A platform admin (no
+    tenant_id) must name a target tenant via the query param.
+    """
+    if user.get("is_platform_admin"):
+        if target_tenant_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="platform admin must specify tenant_id for import",
+            )
+        return int(target_tenant_id)
+    if user.get("tenant_id") is None:
+        raise HTTPException(status_code=400, detail="no tenant bound to user")
+    # A tenant user cannot import into a different tenant.
+    if target_tenant_id is not None and int(target_tenant_id) != int(user["tenant_id"]):
+        raise HTTPException(status_code=403, detail="cannot import into another tenant")
+    return int(user["tenant_id"])
+
+
+@app.post("/api/import/roster")
+async def import_roster_endpoint(
+    file: UploadFile = File(...),
+    tenant_id: int | None = Query(default=None),
+    user: dict[str, Any] = Depends(auth.current_user),
+) -> dict[str, Any]:
+    from app.csv_import import import_roster
+
+    target = _resolve_import_tenant(user, tenant_id)
+    content = await file.read()
+    result = await run_in_threadpool(import_roster, content, target)
+    return result
+
+
+@app.post("/api/import/master")
+async def import_master_endpoint(
+    file: UploadFile = File(...),
+    tenant_id: int | None = Query(default=None),
+    user: dict[str, Any] = Depends(auth.current_user),
+) -> dict[str, Any]:
+    from app.csv_import import import_master
+
+    target = _resolve_import_tenant(user, tenant_id)
+    content = await file.read()
+    result = await run_in_threadpool(import_master, content, target)
+    return result
 
 
 @app.post("/api/inspection/video")
