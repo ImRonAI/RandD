@@ -240,6 +240,7 @@ export const InspectionView = ({
         const html = await api.exportHtml();
         await fetch("/api/inspection/export", {
           method: "POST",
+          credentials: "include",
           headers: { "Content-Type": "text/html" },
           body: html,
         });
