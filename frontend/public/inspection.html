@@ -493,7 +493,7 @@ footer{max-width:760px;margin:0 auto;padding:32px 20px 48px;text-align:center;
 <!-- Sticky progress -->
 <div class="topbar">
   <div class="topbar-inner">
-    <div class="brand serif">Ron<span> · Turnover QC</span></div>
+    <div class="brand serif">Vantage<span> · Turnover QC</span></div>
     <div class="progress-wrap">
       <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
       <div class="progress-num" id="progressNum">0 / 0</div>
@@ -683,7 +683,7 @@ footer{max-width:760px;margin:0 auto;padding:32px 20px 48px;text-align:center;
 
 </main>
 
-<footer id="pageFooter">Ron AI · Turnover Quality Control</footer>
+<footer id="pageFooter">Vantage AI · Turnover Quality Control</footer>
 
 <script>
 (function(){
@@ -730,7 +730,7 @@ footer{max-width:760px;margin:0 auto;padding:32px 20px 48px;text-align:center;
       phUnitCode.textContent = prop.unitCode || '—';
       phCluster.textContent = prop.cluster || '—';
       if(prop.qcAssignee) phInspector.textContent = prop.qcAssignee;
-      pageFooter.textContent = 'Ron AI · Turnover Quality Control · ' +
+      pageFooter.textContent = 'Vantage AI · Turnover Quality Control · ' +
         (prop.name || prop.unitCode) + (prop.unitCode ? ' (' + prop.unitCode + ')' : '');
       document.title = 'Turnover Inspection — ' + (prop.name || prop.unitCode);
     } else {
@@ -738,7 +738,7 @@ footer{max-width:760px;margin:0 auto;padding:32px 20px 48px;text-align:center;
       phSub.textContent = 'Choose the property being inspected to begin.';
       phUnitCode.textContent = '—';
       phCluster.textContent = '—';
-      pageFooter.textContent = 'Ron AI · Turnover Quality Control';
+      pageFooter.textContent = 'Vantage AI · Turnover Quality Control';
     }
     update();
   }
@@ -953,7 +953,7 @@ footer{max-width:760px;margin:0 auto;padding:32px 20px 48px;text-align:center;
         if(video){
           slot.innerHTML =
             '<div class="video-card">' +
-              '<div class="cap">' + (video.source === 'agent' ? 'Ron · ' : '') +
+              '<div class="cap">' + (video.source === 'agent' ? 'Vantage · ' : '') +
                 video.ts.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) + '</div>' +
               '<button class="del" type="button" aria-label="Remove video">&times;</button>' +
               '<video controls playsinline preload="metadata"></video>' +
@@ -1160,7 +1160,7 @@ footer{max-width:760px;margin:0 auto;padding:32px 20px 48px;text-align:center;
       return '<div class="photo-card">' +
         '<img src="' + p.src + '" alt="' + p.tag + ' photo">' +
         '<span class="badge ' + p.tag + '">' + p.tag + '</span>' +
-        '<div class="cap">' + (p.source === 'agent' ? 'Ron · ' : '') + timeStr(p.ts) + '</div>' +
+        '<div class="cap">' + (p.source === 'agent' ? 'Vantage · ' : '') + timeStr(p.ts) + '</div>' +
         '<button class="del" type="button" data-pid="' + p.id + '" aria-label="Remove photo">&times;</button>' +
       '</div>';
     }

@@ -247,7 +247,7 @@ export const VoiceDock = ({
     <>
       <div className="flex flex-col items-center gap-2">
         <StatusOrb state={agent.personaState} />
-        <p className="font-medium text-sm">{agent.agentCard?.name ?? "RandD Live"}</p>
+        <p className="font-medium text-sm">{agent.agentCard?.name ?? "Vantage AI"}</p>
         <p className="text-muted-foreground text-xs capitalize">
           {agent.personaState}
           {agent.status === "connected" && ` · ${agent.voice}`}

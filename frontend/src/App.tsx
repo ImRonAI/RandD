@@ -1,34 +1,41 @@
-import { AuthProvider, useAuth } from "@/auth/AuthProvider";
-import { Logo } from "@/components/mobile/Logo";
-import { AppShell } from "@/views/mobile/AppShell";
-import { SignIn } from "@/views/mobile/SignIn";
-import { WorkspacePicker } from "@/views/mobile/WorkspacePicker";
+import { useEffect, useState } from "react";
+import { PageState } from "@/vantage/components";
+import { VantageAgentFrame } from "@/vantage";
+import { vantageApi } from "@/vantage/api/client";
+import { MagicCodeSignIn, OrganizationChooser } from "@/vantage/screens/AuthScreens";
+import type { Organization, UserSession } from "@/vantage/types";
 
 /**
- * Vantage field app — routing gate.
- *   no session        → SignIn
- *   session, no cluster → WorkspacePicker (multi-tenancy: pick a field area)
- *   session + cluster   → AppShell (My Day / Messages / AI Chat / Profile)
+ * Production Vantage entry point. Authentication and organization scope come
+ * from the canonical FastAPI session; the persistent agent owns the field UI.
  */
-function Root() {
-  const { ready, email, clusterId } = useAuth();
+export default function App() {
+  const reviewMode = (import.meta as ImportMeta & { env: { DEV: boolean } }).env.DEV && new URLSearchParams(location.search).get("review") === "agent-frame";
+  const [session, setSession] = useState<UserSession | null>(null);
+  const [checking, setChecking] = useState(true);
 
-  if (!ready) {
-    return (
-      <div className="on-forest field-app items-center justify-center bg-forest-950">
-        <Logo size={112} className="animate-pulse" />
-      </div>
-    );
+  useEffect(() => {
+    if (reviewMode) {
+      setChecking(false);
+      return;
+    }
+    void vantageApi.me().then((result) => {
+      if (result.ok) setSession(result.data);
+      setChecking(false);
+    });
+  }, [reviewMode]);
+
+  if (reviewMode) return <VantageAgentFrame />;
+
+  if (checking) {
+    return <main className="v-app"><PageState kind="loading" title="Opening Vantage" detail="Verifying your secure session." /></main>;
   }
-  if (!email) return <SignIn />;
-  if (clusterId == null) return <WorkspacePicker email={email} />;
-  return <AppShell clusterId={clusterId} />;
+  if (!session) return <MagicCodeSignIn onAuthenticated={setSession} />;
+  if (!session.activeOrganizationId) {
+    return <OrganizationChooser organizations={session.organizations} onChoose={async (organization: Organization) => {
+      const result = await vantageApi.chooseOrganization(organization.id);
+      if (result.ok) setSession({ ...session, activeOrganizationId: organization.id });
+    }} />;
+  }
+  return <VantageAgentFrame />;
 }
-
-const App = () => (
-  <AuthProvider>
-    <Root />
-  </AuthProvider>
-);
-
-export default App;

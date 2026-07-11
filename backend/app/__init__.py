@@ -1,4 +1,4 @@
-"""RandD Live FastAPI backend."""
+"""Vantage AI FastAPI backend."""
 
 import os
 from pathlib import Path

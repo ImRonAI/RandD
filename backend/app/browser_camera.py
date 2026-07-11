@@ -1,100 +1,74 @@
-"""Bridge between the inspector's BROWSER camera and server-side capture tools.
+"""Authenticated-session bridge between browser camera streams and tools."""
 
-The device camera lives in the browser (getUserMedia) and streams JPEG frames
-over the session WebSocket as ``bidi_image_input`` events. The input adapter
-tees every frame into this ring buffer, so tools like take_photo/take_video
-can capture from the REAL device camera instead of the (nonexistent) server
-camera.
+from __future__ import annotations
 
-Single-process dev server: one buffer shared by the active session
-(last-writer-wins if multiple sessions stream simultaneously).
-"""
-
-import base64
-import threading
-import time
-from collections import deque
+from contextvars import ContextVar, Token
+from contextlib import contextmanager
 from dataclasses import dataclass
 
+from app.session_media import Frame, SessionMediaRegistry
 
-@dataclass
-class Frame:
-    ts: float
-    jpeg: bytes
+_session_id: ContextVar[str | None] = ContextVar("browser_camera_session_id", default=None)
+_registry = SessionMediaRegistry(max_frames=10)
 
 
-_MAX_FRAMES = 600  # ~10-20 minutes at the browser's streaming cadence
-_lock = threading.Lock()
-_frames: deque[Frame] = deque(maxlen=_MAX_FRAMES)
+def bind_session(session_id: str) -> Token:
+    if not session_id:
+        raise ValueError("authenticated session_id is required")
+    return _session_id.set(session_id)
+
+
+def unbind_session(token: Token) -> None:
+    _session_id.reset(token)
+
+
+@contextmanager
+def session_scope(session_id: str):
+    """Integration hook for a WebSocket message/HTTP upload authenticated session."""
+    token = bind_session(session_id)
+    try:
+        yield
+    finally:
+        unbind_session(token)
+
+
+def current_session_id() -> str:
+    session_id = _session_id.get()
+    if not session_id:
+        raise RuntimeError("camera_session_unbound")
+    return session_id
 
 
 def add_frame(image_b64: str) -> None:
-    """Record one browser frame (base64 JPEG payload from bidi_image_input)."""
-    try:
-        jpeg = base64.b64decode(image_b64)
-    except Exception:
-        return
-    with _lock:
-        _frames.append(Frame(ts=time.time(), jpeg=jpeg))
+    _registry.add_frame(current_session_id(), image_b64)
 
 
 def latest_frame(max_age_seconds: float = 15.0) -> Frame | None:
-    """Most recent frame, or None if the stream is stale/absent."""
-    with _lock:
-        if not _frames:
-            return None
-        frame = _frames[-1]
-    if time.time() - frame.ts > max_age_seconds:
-        return None
-    return frame
+    return _registry.latest_frame(current_session_id(), max_age_seconds)
 
 
 def frames_since(start_ts: float) -> list[Frame]:
-    """All frames captured at/after ``start_ts`` (oldest first)."""
-    with _lock:
-        return [f for f in _frames if f.ts >= start_ts]
+    return _registry.frames_since(current_session_id(), start_ts)
 
 
 def stream_active(max_age_seconds: float = 15.0) -> bool:
-    return latest_frame(max_age_seconds) is not None
-
-
-# ---------------------------------------------------------------------------
-# Recorded-clip mailbox (browser MediaRecorder -> take_video tool).
-#
-# take_video arms the mailbox and blocks; the frontend records a webm WITH
-# microphone audio, uploads it to /api/inspection/video, and the endpoint
-# delivers {path, url, section, transcript, ...} here to wake the tool.
-# ---------------------------------------------------------------------------
-
-_clip_lock = threading.Lock()
-_clip_event = threading.Event()
-_clip: dict | None = None
+    return _registry.stream_active(current_session_id(), max_age_seconds)
 
 
 def arm_clip_capture() -> None:
-    """Discard any stale clip so the next wait only sees a fresh recording."""
-    global _clip
-    with _clip_lock:
-        _clip = None
-    _clip_event.clear()
+    _registry.arm_clip(current_session_id())
 
 
 def deliver_clip(info: dict) -> None:
-    """Hand an uploaded recording (with transcript) to the waiting tool."""
-    global _clip
-    with _clip_lock:
-        _clip = dict(info)
-    _clip_event.set()
+    _registry.deliver_clip(current_session_id(), info)
 
 
 def wait_for_clip(timeout: float) -> dict | None:
-    """Block until a clip arrives (or timeout). Consumes the clip."""
-    global _clip
-    if not _clip_event.wait(timeout):
-        return None
-    with _clip_lock:
-        info = _clip
-        _clip = None
-    _clip_event.clear()
-    return info
+    return _registry.wait_for_clip(current_session_id(), timeout)
+
+
+def discard_session(session_id: str) -> None:
+    """WebSocket teardown hook; session ID must come from authenticated server state."""
+    if session_id != current_session_id():
+        raise PermissionError("cannot discard another camera session")
+    _registry.discard(session_id)

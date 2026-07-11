@@ -1,4 +1,4 @@
-# RandD Live Backend
+# Vantage AI Backend
 
 Requires **Python 3.12+** (the Nova Sonic bidi provider refuses to import on older interpreters).
 

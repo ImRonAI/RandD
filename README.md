@@ -3,6 +3,7 @@
 > Product source of truth: [Vantage AI v1 PRD](docs/product/VANTAGE_AI_PRD.md)
 > Implementation audit: [Vantage v1 gap analysis](docs/audit/VANTAGE_V1_GAP_ANALYSIS.md)
 > API contract: [Vantage v1 API and event contract](docs/product/VANTAGE_API_CONTRACT.md)
+> Runtime setup: [Vantage v1 runtime configuration](docs/development/VANTAGE_V1_RUNTIME.md)
 
 An AI-native quality-control platform for short-term rental operations — a strands-based field agent powered by **Gemini Live** (`gemini-3.1-flash-live-preview`) that guides photo-verified turnovers, opens work orders, and delivers signed-off readiness reports.
 

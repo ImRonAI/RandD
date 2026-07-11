@@ -44,12 +44,38 @@ All permissions are evaluated inside the active organization.
 ## Core user journeys
 
 1. Sign in by email magic code and choose an organization.
-2. Open My Day or a home and start/resume an assessment.
-3. Walk the home room by room while the agent proposes structure and captures originals.
+2. Open My Day, which combines the assigned Google Calendar schedule with a Places-validated, house-to-house Google Maps route.
+3. Follow the current turn-by-turn route leg to the next home without leaving the persistent agent UI.
+4. Open a home and start/resume an assessment from the same agent frame.
+5. Walk the home room by room while the agent proposes structure and captures originals.
 4. Correct, rename, move, or archive records with visible autosave state.
 5. Review completeness and finish onboarding.
 6. Later run room-oriented turnover inspections against the established twin/baseline.
-7. Review reports, comparisons, work orders, and claim evidence within role permissions.
+9. Review reports, comparisons, work orders, and claim evidence within role permissions.
+
+## Daily navigation and calendar
+
+Google Calendar and Google Maps are core field-work infrastructure, not optional utilities.
+
+- My Day reads the authenticated inspector's configured Google Calendar and merges linked events with Vantage tasks.
+- Calendar events use private extended properties for Vantage organization, home, task, and inspection identifiers; those identifiers are re-authorized server-side.
+- Full sync stores the Calendar sync token; incremental sync handles pagination and performs a new full sync after Google returns an expired-token response.
+- Every active home stores a validated Google Place ID, formatted address, latitude, and longitude. Address entry uses Places Autocomplete sessions and selected Place Details fields.
+- The day route contains an origin, ordered home waypoints, route legs, traffic-aware duration, distance, encoded path, and step-level driving instructions.
+- Users can keep the in-app turn list visible or hand the current/remaining route to Google Maps navigation.
+- Completing, skipping, delaying, or reordering a stop recomputes remaining route legs and updates the agent's next-stop context.
+- Calendar, route, Places, and navigation failures are explicit and retryable; cached last-known data remains labeled with its freshness.
+
+## Persistent agent interaction frame
+
+The agent is the primary application frame across My Day, navigation, onboarding, turnover, photo/video capture, and approvals. Text/voice input and text/voice output are modality choices within one continuous session, not separate screens.
+
+- Opening the camera compresses or slides the upper conversation region downward to reveal the live preview while preserving visible agent state and recent guidance.
+- Agent guidance overlays or sits adjacent to the live preview without blocking the subject.
+- After capture, one proposed image embeds in the conversation frame with the proposed verdict, rationale, and exact destination line item.
+- **Approve** writes a correlated approval event, persists the accepted original and verdict to the exact inspection item, and adds a visible approval message to the conversation.
+- **Take Again** keeps the proposed image for context and opens an in-place voice/text instruction control. The user's feedback becomes the next capture instruction before the agent recomposes.
+- The flow supports repeated re-shoots, cancellation, disconnect/resume, expiry, and prevents a different session from resolving the approval.
 
 ## Onboarding-assessment workflow
 
@@ -148,7 +174,7 @@ Phone/tablet-first layout, 44px+ targets, safe areas, WCAG AA contrast, visible 
 
 ## V1 scope
 
-Magic-code auth; organization tenancy/RBAC; Big Bear migration; onboarding and turnover inspections; rooms/assets/originals; agent-assisted walkthrough; offline resume; work orders; reports; Slack/Gmail delivery; baseline comparison/claim export; read-only Escapia.
+Magic-code auth; organization tenancy/RBAC; Big Bear migration; Google Calendar schedule sync; Places-validated home destinations; house-to-house Google Maps routing and turn-by-turn directions; persistent agent UI; embedded camera/approval/reshoot flow; onboarding and turnover inspections; rooms/assets/originals; agent-assisted walkthrough; offline resume; work orders; reports; Slack/Gmail delivery; baseline comparison/claim export; read-only Escapia.
 
 ## Future considerations
 
@@ -165,4 +191,3 @@ Rehearse SQLite-to-PostgreSQL migration on a production snapshot; verify row cou
 ## External dependencies
 
 Production rollout requires provisioned RDS PostgreSQL, an S3 Object Lock bucket, AWS IAM/KMS configuration, a dedicated Google Workspace sender, Slack credentials, Escapia credentials, and Bedrock KB metadata-filter support. Repository code must degrade explicitly when these are absent and must not present placeholders as successful integrations.
-
