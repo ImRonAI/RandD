@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from .context import TenantContext
 from .domain import ConflictError, DomainError, VantageRepository
+from .media_finalizer import OriginalMediaService
 
 
 class InspectionCreate(BaseModel):
@@ -57,13 +58,14 @@ class UploadCreate(BaseModel):
     assetId: str
     inspectionId: str | None = None
     clientId: str
+    filename: str
+    mimeType: str
+    byteSize: int = Field(gt=0)
+    sha256: str = Field(min_length=64, max_length=64)
 
 
 class UploadComplete(BaseModel):
-    objectKey: str
-    sha256: str = Field(min_length=64, max_length=64)
-    byteSize: int = Field(gt=0)
-    mimeType: str
+    versionId: str = Field(min_length=1)
 
 
 def _raise(error: DomainError) -> None:
@@ -89,6 +91,7 @@ def _require_home_read(context: TenantContext, home_id: str) -> None:
 def create_vantage_router(
     repository: Any,
     context_dependency: Callable[..., TenantContext],
+    media_service: OriginalMediaService | None = None,
 ) -> APIRouter:
     """Build routes without global auth/database state.
 
@@ -232,20 +235,49 @@ def create_vantage_router(
     def create_upload(payload: UploadCreate, context: Context) -> dict[str, Any]:
         _require_write(context)
         _require_home_read(context, payload.homeId)
+        if media_service is None:
+            raise HTTPException(status_code=503, detail={"error": {
+                "code": "original_storage_unavailable", "message": "Original storage is not configured",
+                "retryable": True, "fields": {},
+            }})
         try:
-            return call(context, "create_photo_upload", context.organization_id, context.user_id, payload.homeId, payload.roomId, payload.assetId, payload.inspectionId, payload.clientId)
+            return media_service.initiate(
+                context.organization_id, context.user_id, home_id=payload.homeId,
+                room_id=payload.roomId, asset_id=payload.assetId,
+                inspection_id=payload.inspectionId, client_id=payload.clientId,
+                filename=payload.filename, mime_type=payload.mimeType,
+                byte_size=payload.byteSize, sha256=payload.sha256,
+            )
         except DomainError as error:
             _raise(error)
 
     @router.post("/media/uploads/{upload_id}/complete")
     def complete_upload(upload_id: str, payload: UploadComplete, context: Context) -> dict[str, Any]:
         _require_write(context)
-        del upload_id, payload, context
-        raise HTTPException(status_code=409, detail={"error": {
-            "code": "server_verification_required",
-            "message": "Original completion requires the server-owned storage verification path",
-            "retryable": False,
-            "fields": {},
-        }})
+        if media_service is None:
+            raise HTTPException(status_code=503, detail={"error": {
+                "code": "original_storage_unavailable", "message": "Original storage is not configured",
+                "retryable": True, "fields": {},
+            }})
+        try:
+            upload = call(context, "get_original_upload", context.organization_id, upload_id, read_only=True)
+            _require_home_read(context, upload["home_id"])
+            return media_service.finalize(context.organization_id, upload_id, payload.versionId, user_id=context.user_id)
+        except DomainError as error:
+            _raise(error)
+
+    @router.get("/media/uploads/{upload_id}")
+    def read_original(upload_id: str, context: Context) -> dict[str, Any]:
+        if media_service is None:
+            raise HTTPException(status_code=503, detail={"error": {
+                "code": "original_storage_unavailable", "message": "Original storage is not configured",
+                "retryable": True, "fields": {},
+            }})
+        try:
+            upload = call(context, "get_original_upload", context.organization_id, upload_id, read_only=True)
+            _require_home_read(context, upload["home_id"])
+            return media_service.signed_read(context.organization_id, upload_id, user_id=context.user_id)
+        except DomainError as error:
+            _raise(error)
 
     return router

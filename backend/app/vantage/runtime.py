@@ -21,6 +21,7 @@ from .context import TenantContext
 from .domain import VantageRepository
 from .google_day import GoogleCalendarService, GoogleNavigationService, GooglePlacesService
 from .google_http_clients import GoogleCalendarHttpClient, GooglePlacesHttpClient, GoogleRoutesHttpClient
+from .media_finalizer import OriginalMediaService, S3OriginalObjectStore
 from .schema import install_sqlite_schema
 from .postgres import PostgresAdapter, PostgresConfig
 
@@ -160,6 +161,7 @@ class VantageRuntime:
     calendar: GoogleCalendarService
     places: GooglePlacesService
     navigation: GoogleNavigationService
+    media_service: OriginalMediaService | None
     connect: Any
     database: PostgresAdapter | None = None
 
@@ -225,10 +227,46 @@ def build_runtime() -> VantageRuntime:
     maps_key = os.getenv("GOOGLE_MAPS_API_KEY", "")
     places_client = GooglePlacesHttpClient(maps_key) if maps_key else None
     routes_client = GoogleRoutesHttpClient(maps_key) if maps_key else None
+    media_service = _build_original_media_service(repository)
     return VantageRuntime(
         repository, token_service, magic_codes, authorization,
         GoogleCalendarService(calendar_client, authorization),
-        GooglePlacesService(places_client), GoogleNavigationService(routes_client, authorization), connect, database,
+        GooglePlacesService(places_client), GoogleNavigationService(routes_client, authorization),
+        media_service, connect, database,
+    )
+
+
+def _build_original_media_service(repository: VantageRepository) -> OriginalMediaService | None:
+    bucket = os.getenv("VANTAGE_S3_BUCKET", "").strip()
+    if not bucket:
+        return None
+    kms_key_id = os.getenv("VANTAGE_S3_KMS_KEY_ID", "").strip()
+    expected_owner = (
+        os.getenv("VANTAGE_S3_EXPECTED_BUCKET_OWNER", "").strip()
+        or os.getenv("AWS_ACCOUNT_ID", "").strip()
+    )
+    if not kms_key_id or not expected_owner:
+        raise RuntimeError(
+            "VANTAGE_S3_BUCKET requires VANTAGE_S3_KMS_KEY_ID and "
+            "VANTAGE_S3_EXPECTED_BUCKET_OWNER or AWS_ACCOUNT_ID"
+        )
+    retention_days = int(os.getenv("VANTAGE_S3_RETENTION_DAYS", "2557"))
+    read_expires_seconds = int(os.getenv("VANTAGE_S3_SIGNED_READ_SECONDS", "300"))
+    region_name = os.getenv("VANTAGE_S3_REGION") or os.getenv("AWS_REGION") or None
+    import boto3
+
+    client = boto3.client("s3", region_name=region_name)
+    storage = S3OriginalObjectStore(
+        client=client,
+        bucket=bucket,
+        kms_key_id=kms_key_id,
+        expected_bucket_owner=expected_owner,
+        retention_days=retention_days,
+    )
+    return OriginalMediaService(
+        repository,
+        storage,
+        read_expires_seconds=read_expires_seconds,
     )
 
 

@@ -179,6 +179,31 @@ CREATE TABLE IF NOT EXISTS photo (
   CHECK (upload_status IN ('pending','verified','failed','abandoned')),
   CHECK (upload_status != 'verified' OR (original_object_key IS NOT NULL AND sha256 IS NOT NULL AND byte_size IS NOT NULL AND mime_type IS NOT NULL))
 );
+CREATE TABLE IF NOT EXISTS original_upload (
+  organization_id TEXT NOT NULL, id TEXT NOT NULL, home_id TEXT NOT NULL, photo_id TEXT NOT NULL,
+  storage_bucket TEXT NOT NULL, object_key TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+  expected_byte_size INTEGER NOT NULL, expected_sha256 TEXT NOT NULL, expected_mime_type TEXT NOT NULL,
+  storage_version_id TEXT, etag TEXT, encryption_algorithm TEXT, kms_key_id TEXT,
+  object_lock_mode TEXT, retention_until TEXT, legal_hold_status TEXT,
+  verification_attempts INTEGER NOT NULL DEFAULT 0, last_error_code TEXT, verified_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (organization_id,id), UNIQUE (organization_id,photo_id),
+  UNIQUE (organization_id,home_id,photo_id,id), UNIQUE (storage_bucket,object_key),
+  FOREIGN KEY (organization_id,home_id,photo_id) REFERENCES photo(organization_id,home_id,id),
+  CHECK (status IN ('pending','failed','verified','abandoned')),
+  CHECK (expected_byte_size>0), CHECK (length(expected_sha256)=64),
+  CHECK (verification_attempts>=0),
+  CHECK (status!='verified' OR (
+    storage_version_id IS NOT NULL AND storage_version_id <> ''
+    AND encryption_algorithm='aws:kms'
+    AND kms_key_id IS NOT NULL AND kms_key_id <> ''
+    AND object_lock_mode='COMPLIANCE'
+    AND retention_until IS NOT NULL
+    AND verified_at IS NOT NULL
+    AND last_error_code IS NULL
+    AND julianday(retention_until) > julianday(verified_at)
+  ))
+);
 CREATE TABLE IF NOT EXISTS checklist_item (
   item_key TEXT PRIMARY KEY, section_name TEXT NOT NULL, label TEXT NOT NULL UNIQUE,
   display_order INTEGER NOT NULL UNIQUE, active INTEGER NOT NULL DEFAULT 1

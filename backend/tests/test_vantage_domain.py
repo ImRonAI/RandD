@@ -37,6 +37,54 @@ def repo(tmp_path: Path) -> VantageRepository:
     return repository
 
 
+def _trusted_verified_original(
+    repository: VantageRepository,
+    inspection: dict,
+    room: dict,
+    asset: dict,
+    client_id: str,
+    *,
+    sha256: str = "a" * 64,
+    byte_size: int = 123,
+    mime_type: str = "image/jpeg",
+    purpose: str = "asset_original",
+) -> dict:
+    upload = repository.initiate_original_upload(
+        "org-a",
+        "user-a",
+        home_id=room["home_id"],
+        room_id=room["id"],
+        asset_id=asset["id"],
+        inspection_id=inspection["id"],
+        client_id=client_id,
+        storage_bucket="vantage-originals",
+        filename=f"{client_id}.jpg",
+        mime_type=mime_type,
+        byte_size=byte_size,
+        sha256=sha256,
+        purpose=purpose,
+    )
+    verified = repository._finalize_original_from_storage(
+        "org-a",
+        upload["upload_id"],
+        {
+            "storage_bucket": upload["storage_bucket"],
+            "object_key": upload["object_key"],
+            "storage_version_id": f"version-{client_id}",
+            "byte_size": byte_size,
+            "mime_type": mime_type,
+            "sha256": sha256,
+            "etag": f"etag-{client_id}",
+            "encryption_algorithm": "aws:kms",
+            "kms_key_id": "kms-key",
+            "object_lock_mode": "COMPLIANCE",
+            "retention_until": "2033-01-01T00:00:00+00:00",
+            "legal_hold_status": None,
+        },
+    )
+    return {**verified, "id": upload["photo_id"]}
+
+
 def test_blank_onboarding_has_no_precreated_rooms(repo: VantageRepository) -> None:
     inspection = repo.start_inspection("org-a", "user-a", "home-a", "onboarding", "client-i")
     assert inspection["rooms"] == []
@@ -76,8 +124,62 @@ def test_asset_is_idempotent_and_only_complete_with_verified_original(repo: Vant
     failed = repo.create_photo_upload("org-a", "user-a", "home-a", room["id"], asset["id"], inspection["id"], "photo-failed")
     repo.fail_photo_upload("org-a", failed["id"], "network")
     assert repo.get_asset("org-a", asset["id"])["completion_status"] == "draft"
-    original = repo.create_photo_upload("org-a", "user-a", "home-a", room["id"], asset["id"], inspection["id"], "photo-ok")
-    repo.complete_photo_upload("org-a", original["id"], f"org-a/home-a/originals/{original['id']}.jpg", "a" * 64, 123, "image/jpeg")
+    _trusted_verified_original(repo, inspection, room, asset, "photo-ok")
+    assert repo.get_asset("org-a", asset["id"])["completion_status"] == "complete"
+
+
+def test_original_upload_state_is_server_owned_and_records_failures(repo: VantageRepository) -> None:
+    inspection = repo.start_inspection("org-a", "user-a", "home-a", "onboarding", "server-owned-i")
+    room = repo.create_room(
+        "org-a", "user-a", "home-a", inspection["id"], repo.list_room_types("org-a")[0]["id"],
+        "Kitchen", "server-owned-room"
+    )
+    asset = repo.create_asset(
+        "org-a", "user-a", room["id"], inspection["id"], "Appliance", "Range", "server-owned-asset"
+    )
+    upload = repo.initiate_original_upload(
+        "org-a", "user-a", home_id="home-a", room_id=room["id"], asset_id=asset["id"],
+        inspection_id=inspection["id"], client_id="server-owned-photo",
+        storage_bucket="vantage-originals", filename="range.jpg", mime_type="image/jpeg",
+        byte_size=12, sha256="d" * 64,
+    )
+    replay = repo.initiate_original_upload(
+        "org-a", "user-a", home_id="home-a", room_id=room["id"], asset_id=asset["id"],
+        inspection_id=inspection["id"], client_id="server-owned-photo",
+        storage_bucket="vantage-originals", filename="range.jpg", mime_type="image/jpeg",
+        byte_size=12, sha256="d" * 64,
+    )
+    assert replay["upload_id"] == upload["upload_id"]
+    assert upload["object_key"] == f"org-a/home-a/originals/{upload['photo_id']}.jpg"
+    with pytest.raises(DomainError) as untrusted:
+        repo.complete_photo_upload(
+            "org-a", upload["photo_id"], upload["object_key"], "d" * 64, 12, "image/jpeg"
+        )
+    assert untrusted.value.code == "server_verification_required"
+
+    repo.record_original_upload_failure("org-a", upload["upload_id"], "media_hash_mismatch")
+    failed = repo.get_original_upload("org-a", upload["upload_id"])
+    assert failed["status"] == "failed"
+    assert failed["photo_status"] == "failed"
+    assert failed["last_error_code"] == "media_hash_mismatch"
+    assert failed["verification_attempts"] == 1
+    assert repo.get_asset("org-a", asset["id"])["completion_status"] == "draft"
+
+    finalized = repo._finalize_original_from_storage("org-a", upload["upload_id"], {
+        "storage_bucket": upload["storage_bucket"],
+        "object_key": upload["object_key"],
+        "storage_version_id": "version-server-owned",
+        "byte_size": 12,
+        "mime_type": "image/jpeg",
+        "sha256": "d" * 64,
+        "etag": "opaque",
+        "encryption_algorithm": "aws:kms",
+        "kms_key_id": "kms-key",
+        "object_lock_mode": "COMPLIANCE",
+        "retention_until": "2033-01-01T00:00:00+00:00",
+        "legal_hold_status": None,
+    })
+    assert finalized["status"] == "verified"
     assert repo.get_asset("org-a", asset["id"])["completion_status"] == "complete"
 
 
@@ -104,8 +206,7 @@ def test_completion_requires_room_and_complete_assets_but_not_optional_metadata(
     with pytest.raises(ConflictError):
         repo.complete_onboarding("org-a", "user-a", inspection["id"])
     repo.update_asset("org-a", "user-a", asset["id"], asset_type="Appliance", name="Fridge")
-    photo = repo.create_photo_upload("org-a", "user-a", "home-a", room["id"], asset["id"], inspection["id"], "photo")
-    repo.complete_photo_upload("org-a", photo["id"], f"org-a/home-a/originals/{photo['id']}.jpg", "b" * 64, 20, "image/jpeg")
+    _trusted_verified_original(repo, inspection, room, asset, "photo", sha256="b" * 64, byte_size=20)
     completed = repo.complete_onboarding("org-a", "user-a", inspection["id"])
     assert completed["status"] == "completed"
     assert repo.get_asset("org-a", asset["id"])["manufacturer"] is None
@@ -147,9 +248,9 @@ def test_photo_approval_persists_exact_verified_destination(repo: VantageReposit
                             repo.list_room_types("org-a")[0]["id"], "Kitchen", "approval-room")
     asset = repo.create_asset("org-a", "user-a", room["id"], inspection["id"],
                               "Appliance", "Refrigerator", "approval-asset")
-    photo = repo.create_photo_upload("org-a", "user-a", "home-a", room["id"], asset["id"],
-                                     inspection["id"], "approval-photo")
-    repo.complete_photo_upload("org-a", photo["id"], f"org-a/home-a/originals/{photo['id']}.jpg", "c" * 64, 20, "image/jpeg")
+    photo = _trusted_verified_original(
+        repo, inspection, room, asset, "approval-photo", sha256="c" * 64, byte_size=20
+    )
     item_result = repo.record_inspection_item_result(
         "org-a", "user-a", inspection_id=inspection["id"],
         item_key="housekeeping.kitchen.refrigerator_cold_clean", result="PASS",

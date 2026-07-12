@@ -73,6 +73,9 @@ jobs:
       - name: Run DAH-124 PostgreSQL constraints and RLS acceptance
         run: psql --set ON_ERROR_STOP=1 --file backend/tests/postgres/dah_124_acceptance.sql
 
+      - name: Run DAH-131 original media PostgreSQL acceptance
+        run: psql --set ON_ERROR_STOP=1 --file backend/tests/postgres/dah_131_original_media_acceptance.sql
+
   python:
     runs-on: ubuntu-latest
     steps:

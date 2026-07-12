@@ -67,7 +67,7 @@ async def protect_tenant_surfaces(request: Request, call_next):
     return await call_next(request)
 
 app.include_router(create_auth_router(VANTAGE))
-app.include_router(create_vantage_router(VANTAGE.repository, _session_dependency))
+app.include_router(create_vantage_router(VANTAGE.repository, _session_dependency, VANTAGE.media_service))
 app.include_router(create_google_day_router(
     calendar=VANTAGE.calendar,
     places=VANTAGE.places,

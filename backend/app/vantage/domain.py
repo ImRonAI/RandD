@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import re
 import sqlite3
 import uuid
@@ -326,31 +327,190 @@ class VantageRepository:
                 })
             return dict(existing)
 
-    def complete_photo_upload(self, organization_id: str, photo_id: str, object_key: str, sha256: str, byte_size: int, mime_type: str) -> dict[str, Any]:
+    def initiate_original_upload(
+        self, organization_id: str, user_id: str, *, home_id: str, room_id: str,
+        asset_id: str, inspection_id: str | None, client_id: str, storage_bucket: str,
+        filename: str, mime_type: str, byte_size: int, sha256: str,
+        purpose: str = "asset_original",
+    ) -> dict[str, Any]:
+        """Atomically create one PENDING photo and its server-owned upload capability."""
+        client_id = self._require_client_id(client_id)
+        normalized_mime = mime_type.split(";", 1)[0].strip().lower()
+        normalized_sha = sha256.strip().lower()
+        if (purpose not in PHOTO_PURPOSES
+                or normalized_mime not in {"image/jpeg", "image/png", "image/heic", "image/heif"}
+                or byte_size < 1 or byte_size > 50 * 1024 * 1024
+                or not re.fullmatch(r"[0-9a-f]{64}", normalized_sha)
+                or not storage_bucket.strip()):
+            raise DomainError("invalid_original_declaration", "Original upload constraints are invalid")
+        suffix = __import__("pathlib").Path(filename).suffix.lower()
+        if not re.fullmatch(r"\.[a-z0-9]{1,10}", suffix or ""):
+            suffix = mimetypes.guess_extension(normalized_mime) or ".bin"
         with self._connection() as c:
-            photo = c.execute("SELECT * FROM photo WHERE organization_id=? AND id=?", (organization_id, photo_id)).fetchone()
-            if photo is None:
-                raise DomainError("not_found", "photo upload was not found")
-            expected_key = re.compile(
-                rf"^{re.escape(organization_id)}/{re.escape(photo['home_id'])}/originals/"
-                r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\.[A-Za-z0-9]+$"
-            )
-            if (not expected_key.fullmatch(object_key)
-                    or not re.fullmatch(r"[0-9a-fA-F]{64}", sha256)
-                    or byte_size <= 0 or not mime_type.startswith("image/")):
-                raise DomainError("invalid_original", "original metadata failed verification")
-            if photo["upload_status"] == "verified":
+            asset = c.execute(
+                """SELECT * FROM asset WHERE organization_id=? AND id=? AND home_id=?
+                   AND room_id=? AND lifecycle_state='active'""",
+                (organization_id, asset_id, home_id, room_id),
+            ).fetchone()
+            if asset is None:
+                raise DomainError("not_found", "asset was not found")
+            if inspection_id and c.execute(
+                "SELECT 1 FROM inspection WHERE organization_id=? AND id=? AND home_id=?",
+                (organization_id, inspection_id, home_id),
+            ).fetchone() is None:
+                raise DomainError("not_found", "inspection was not found")
+            photo = c.execute(
+                "SELECT * FROM photo WHERE organization_id=? AND uploader_id=? AND client_id=?",
+                (organization_id, user_id, client_id),
+            ).fetchone()
+            if photo is not None:
+                upload = c.execute(
+                    "SELECT * FROM original_upload WHERE organization_id=? AND photo_id=?",
+                    (organization_id, photo["id"]),
+                ).fetchone()
+                if upload is None:
+                    raise ConflictError("upload_state_conflict", "Photo exists without its upload capability")
                 self._reject_conflicting_replay(photo, {
-                    "original_object_key": object_key,
-                    "sha256": sha256.lower(),
-                    "byte_size": byte_size,
-                    "mime_type": mime_type,
+                    "home_id": home_id, "room_id": room_id, "asset_id": asset_id,
+                    "inspection_id": inspection_id, "purpose": purpose,
                 })
-                return dict(photo)
-            c.execute("UPDATE photo SET upload_status='verified',original_object_key=?,sha256=?,byte_size=?,mime_type=?,failure_reason=NULL WHERE organization_id=? AND id=?", (object_key, sha256.lower(), byte_size, mime_type, organization_id, photo_id))
-            if photo["asset_id"]:
-                self._refresh_asset_completion(c, organization_id, photo["asset_id"])
-            return self._dict(c.execute("SELECT * FROM photo WHERE organization_id=? AND id=?", (organization_id, photo_id)).fetchone(), "photo")
+                self._reject_conflicting_replay(upload, {
+                    "storage_bucket": storage_bucket, "expected_byte_size": byte_size,
+                    "expected_sha256": normalized_sha, "expected_mime_type": normalized_mime,
+                })
+                return {**dict(upload), "photo_id": photo["id"], "upload_id": upload["id"]}
+            photo_id, upload_id = str(uuid.uuid4()), str(uuid.uuid4())
+            object_key = f"{organization_id}/{home_id}/originals/{photo_id}{suffix}"
+            c.execute(
+                """INSERT INTO photo(
+                     organization_id,id,home_id,room_id,asset_id,inspection_id,uploader_id,
+                     client_id,purpose,upload_status,original_object_key)
+                   VALUES (?,?,?,?,?,?,?,?,?,'pending',?)""",
+                (organization_id, photo_id, home_id, room_id, asset_id, inspection_id,
+                 user_id, client_id, purpose, object_key),
+            )
+            c.execute(
+                """INSERT INTO original_upload(
+                     organization_id,id,home_id,photo_id,storage_bucket,object_key,
+                     expected_byte_size,expected_sha256,expected_mime_type)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (organization_id, upload_id, home_id, photo_id, storage_bucket, object_key,
+                 byte_size, normalized_sha, normalized_mime),
+            )
+            return dict(c.execute(
+                "SELECT *,id AS upload_id FROM original_upload WHERE organization_id=? AND id=?",
+                (organization_id, upload_id),
+            ).fetchone())
+
+    def get_original_upload(self, organization_id: str, upload_id: str) -> dict[str, Any]:
+        with self._connection() as c:
+            return self._dict(c.execute(
+                """SELECT u.*,u.id AS upload_id,p.room_id,p.asset_id,p.inspection_id,p.uploader_id,
+                          p.upload_status AS photo_status
+                     FROM original_upload u JOIN photo p
+                       ON p.organization_id=u.organization_id AND p.id=u.photo_id
+                    WHERE u.organization_id=? AND u.id=?""",
+                (organization_id, upload_id),
+            ).fetchone(), "original upload")
+
+    def record_original_upload_failure(self, organization_id: str, upload_id: str, error_code: str) -> None:
+        with self._connection() as c:
+            upload = c.execute(
+                """SELECT u.*,p.asset_id
+                     FROM original_upload u JOIN photo p
+                       ON p.organization_id=u.organization_id AND p.id=u.photo_id
+                    WHERE u.organization_id=? AND u.id=?""",
+                (organization_id, upload_id),
+            ).fetchone()
+            if upload is None:
+                raise DomainError("not_found", "original upload was not found")
+            if upload["status"] != "verified":
+                c.execute(
+                    """UPDATE original_upload
+                          SET status='failed',verification_attempts=verification_attempts+1,
+                              last_error_code=?,updated_at=CURRENT_TIMESTAMP
+                        WHERE organization_id=? AND id=? AND status IN ('pending','failed')""",
+                    (error_code, organization_id, upload_id),
+                )
+                c.execute(
+                    """UPDATE photo SET upload_status='failed',failure_reason=?
+                        WHERE organization_id=? AND id=? AND upload_status IN ('pending','failed')""",
+                    (error_code, organization_id, upload["photo_id"]),
+                )
+                if upload["asset_id"]:
+                    self._refresh_asset_completion(c, organization_id, upload["asset_id"])
+
+    def complete_photo_upload(self, organization_id: str, photo_id: str, object_key: str, sha256: str, byte_size: int, mime_type: str) -> dict[str, Any]:
+        del organization_id, photo_id, object_key, sha256, byte_size, mime_type
+        raise DomainError(
+            "server_verification_required",
+            "Only the trusted storage finalizer can mark an original as verified",
+        )
+
+    def _finalize_original_from_storage(self, organization_id: str, upload_id: str,
+                                        facts: dict[str, Any]) -> dict[str, Any]:
+        """Persist trusted immutable storage facts; callers must be the finalizer service."""
+        with self._connection() as c:
+            upload = c.execute(
+                "SELECT * FROM original_upload WHERE organization_id=? AND id=?",
+                (organization_id, upload_id),
+            ).fetchone()
+            if upload is None:
+                raise DomainError("not_found", "original upload was not found")
+            expected = {
+                "storage_bucket": upload["storage_bucket"], "object_key": upload["object_key"],
+                "byte_size": upload["expected_byte_size"], "sha256": upload["expected_sha256"],
+                "mime_type": upload["expected_mime_type"],
+            }
+            for key, value in expected.items():
+                if facts.get(key) != value:
+                    raise ConflictError("storage_verification_conflict", f"Stored original {key} does not match")
+            required = ("storage_version_id", "encryption_algorithm", "kms_key_id", "object_lock_mode", "retention_until")
+            if any(not facts.get(key) for key in required):
+                raise DomainError("storage_retention_unverified", "Immutable storage facts are incomplete")
+            if facts["encryption_algorithm"] != "aws:kms" or facts["object_lock_mode"] != "COMPLIANCE":
+                raise DomainError("storage_retention_unverified", "Immutable storage facts are incomplete")
+            if upload["status"] == "verified":
+                self._reject_conflicting_replay(upload, {
+                    "storage_version_id": facts["storage_version_id"],
+                    "etag": facts.get("etag"), "encryption_algorithm": facts["encryption_algorithm"],
+                    "kms_key_id": facts.get("kms_key_id"), "object_lock_mode": facts["object_lock_mode"],
+                    "retention_until": facts["retention_until"],
+                    "legal_hold_status": facts.get("legal_hold_status"),
+                })
+            else:
+                c.execute(
+                    """UPDATE original_upload SET status='verified',storage_version_id=?,etag=?,
+                         encryption_algorithm=?,kms_key_id=?,object_lock_mode=?,retention_until=?,
+                         legal_hold_status=?,verification_attempts=verification_attempts+1,
+                         last_error_code=NULL,verified_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
+                       WHERE organization_id=? AND id=? AND status IN ('pending','failed')""",
+                    (facts["storage_version_id"], facts.get("etag"), facts["encryption_algorithm"],
+                     facts.get("kms_key_id"), facts["object_lock_mode"], facts["retention_until"],
+                     facts.get("legal_hold_status"), organization_id, upload_id),
+                )
+                if c.execute("SELECT changes()").fetchone()[0] != 1:
+                    raise ConflictError("upload_state_conflict", "Original upload cannot be finalized")
+                c.execute(
+                    """UPDATE photo SET upload_status='verified',sha256=?,byte_size=?,mime_type=?,
+                         failure_reason=NULL WHERE organization_id=? AND id=? AND upload_status IN ('pending','failed')""",
+                    (facts["sha256"], facts["byte_size"], facts["mime_type"],
+                     organization_id, upload["photo_id"]),
+                )
+                photo = c.execute(
+                    "SELECT * FROM photo WHERE organization_id=? AND id=?",
+                    (organization_id, upload["photo_id"]),
+                ).fetchone()
+                if photo and photo["asset_id"]:
+                    self._refresh_asset_completion(c, organization_id, photo["asset_id"])
+            return dict(c.execute(
+                """SELECT u.*,u.id AS upload_id,p.room_id,p.asset_id,p.inspection_id,p.uploader_id,
+                          p.upload_status AS photo_status
+                     FROM original_upload u JOIN photo p
+                       ON p.organization_id=u.organization_id AND p.id=u.photo_id
+                    WHERE u.organization_id=? AND u.id=?""",
+                (organization_id, upload_id),
+            ).fetchone())
 
     def record_inspection_item_result(self, organization_id: str, user_id: str, *, inspection_id: str,
                                       item_key: str, result: str, note: str, client_id: str) -> dict[str, Any]:

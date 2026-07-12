@@ -44,15 +44,41 @@ def _inventory(repository: VantageRepository, *, home: str = "home-a", suffix: s
 
 def _verified_photo(repository: VantageRepository, inspection: dict, room: dict, asset: dict,
                     suffix: str, purpose: str = "inspection_evidence") -> dict:
-    photo = repository.create_photo_upload(
-        "org-a", "user-a", room["home_id"], room["id"], asset["id"], inspection["id"],
-        f"photo-{suffix}", purpose,
+    sha256 = suffix[0].encode().hex()[0].ljust(64, "a")
+    upload = repository.initiate_original_upload(
+        "org-a",
+        "user-a",
+        home_id=room["home_id"],
+        room_id=room["id"],
+        asset_id=asset["id"],
+        inspection_id=inspection["id"],
+        client_id=f"photo-{suffix}",
+        storage_bucket="vantage-originals",
+        filename=f"{suffix}.jpg",
+        mime_type="image/jpeg",
+        byte_size=100,
+        sha256=sha256,
+        purpose=purpose,
     )
-    repository.complete_photo_upload(
-        "org-a", photo["id"], f"org-a/{room['home_id']}/originals/{photo['id']}.jpg",
-        suffix[0].encode().hex()[0].ljust(64, "a"), 100, "image/jpeg",
+    verified = repository._finalize_original_from_storage(
+        "org-a",
+        upload["upload_id"],
+        {
+            "storage_bucket": upload["storage_bucket"],
+            "object_key": upload["object_key"],
+            "storage_version_id": f"version-{suffix}",
+            "byte_size": 100,
+            "mime_type": "image/jpeg",
+            "sha256": sha256,
+            "etag": f"etag-{suffix}",
+            "encryption_algorithm": "aws:kms",
+            "kms_key_id": "kms-key",
+            "object_lock_mode": "COMPLIANCE",
+            "retention_until": "2033-01-01T00:00:00+00:00",
+            "legal_hold_status": None,
+        },
     )
-    return photo
+    return {**verified, "id": upload["photo_id"]}
 
 
 def test_exact_qc_journal_catalog_is_seeded_without_label_inference(store) -> None:
@@ -104,10 +130,11 @@ def test_scoped_client_id_replays_require_identical_payload(store) -> None:
             "org-a", "user-a", "home-a", room["id"], asset["id"], inspection["id"],
             "photo-replay", "asset_original",
         )
-    with pytest.raises(ConflictError):
+    with pytest.raises(DomainError) as untrusted_complete:
         repository.complete_photo_upload(
             "org-a", photo["id"], f"org-a/home-a/originals/{photo['id']}.jpg", "b" * 64, 100, "image/jpeg"
         )
+    assert untrusted_complete.value.code == "server_verification_required"
 
 
 def test_result_history_pass_fail_na_and_multiple_photos(store) -> None:
