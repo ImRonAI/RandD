@@ -22,6 +22,12 @@ BEGIN
   END IF;
 END $$;
 
+-- Enforce attributes even when the role pre-exists (same pattern as 0003):
+-- a pre-existing role without BYPASSRLS would silently break login discovery,
+-- and one with LOGIN would be a credential-bearing RLS bypass.
+ALTER ROLE vantage_auth_reader
+  NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT BYPASSRLS NOLOGIN;
+
 ALTER FUNCTION public.auth_user_by_email(text) OWNER TO vantage_auth_reader;
 ALTER FUNCTION public.auth_active_memberships(uuid) OWNER TO vantage_auth_reader;
 
