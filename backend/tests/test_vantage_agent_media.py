@@ -117,10 +117,12 @@ async def test_approve_associates_atomically_and_emits_record_ids():
         associate_approval=associate,
     )
     request = registry.request(
-        session_id="s", inspection_id="i", item_id="item-1", asset_id="asset-1",
+        session_id="s", inspection_id="i", item_id="item-1", result_id="result-1",
+        asset_id="asset-1",
         proposed_verdict="PASS", rationale="sharp", media_id="m",
     )
     assert events[-1]["itemId"] == "item-1"
+    assert events[-1]["resultId"] == "result-1"
     assert events[-1]["assetId"] == "asset-1"
     assert events[-1]["proposedVerdict"] == "PASS"
     registry.resolve(session_id="s", resolution=ApprovalResolution(request.approval_id, "approve"))

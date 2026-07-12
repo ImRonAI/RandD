@@ -2,6 +2,8 @@
 
 Apply files in lexical order with a migration role that owns the schema. The
 runtime role must not own tables, be a superuser, or have `BYPASSRLS`.
+Vantage targets PostgreSQL 16 for local, CI, staging, and production so catalog,
+constraint, and row-security behavior is consistent across environments.
 
 Every request transaction must set tenant context before issuing tenant-owned
 queries:
@@ -20,4 +22,3 @@ verify its JSON summary and source counts, then cut over application reads.
 Historical House Keeping reports remain legacy records; the importer never
 invents room mappings. Rollback is application cutback to SQLite plus removal
 of the new PostgreSQL schema before production writes begin.
-

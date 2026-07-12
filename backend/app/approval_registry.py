@@ -19,6 +19,7 @@ class ApprovalRequest:
     media_id: str
     expires_at: float
     item_id: str | None = None
+    result_id: str | None = None
     asset_id: str | None = None
     proposed_verdict: str | None = None
 
@@ -74,7 +75,8 @@ class ApprovalRegistry:
         self._associate_approval = associate_approval
 
     def request(self, *, session_id: str, inspection_id: str, rationale: str,
-                media_id: str, item_id: str | None = None, asset_id: str | None = None,
+                media_id: str, item_id: str | None = None, result_id: str | None = None,
+                asset_id: str | None = None,
                 proposed_verdict: str | None = None,
                 timeout_seconds: float = 120) -> ApprovalRequest:
         if not all((session_id, inspection_id, media_id)):
@@ -82,8 +84,10 @@ class ApprovalRegistry:
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
         request = ApprovalRequest(
-            str(uuid.uuid4()), session_id, inspection_id, rationale, media_id,
-            time.time() + timeout_seconds, item_id, asset_id, proposed_verdict,
+            approval_id=str(uuid.uuid4()), session_id=session_id, inspection_id=inspection_id,
+            rationale=rationale, media_id=media_id, expires_at=time.time() + timeout_seconds,
+            item_id=item_id, result_id=result_id, asset_id=asset_id,
+            proposed_verdict=proposed_verdict,
         )
         self._store.put(request)
         self._pending[request.approval_id] = _Pending(
@@ -91,7 +95,8 @@ class ApprovalRegistry:
         )
         self._event_sink({
             "type": "approval_requested", "approvalId": request.approval_id,
-            "inspectionId": inspection_id, "itemId": item_id, "assetId": asset_id,
+            "inspectionId": inspection_id, "itemId": item_id, "resultId": result_id,
+            "assetId": asset_id,
             "destinationLabel": item_id or asset_id or "Unresolved destination",
             "proposedVerdict": proposed_verdict, "rationale": rationale,
             "mediaId": media_id, "expiresAt": request.expires_at,

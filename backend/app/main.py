@@ -360,7 +360,7 @@ async def websocket_endpoint(
             return VANTAGE.repository.associate_approved_evidence(
                 context.organization_id, context.user_id,
                 inspection_id=request.inspection_id, photo_id=request.media_id,
-                item_id=request.item_id, asset_id=request.asset_id,
+                item_id=request.item_id, result_id=request.result_id, asset_id=request.asset_id,
                 verdict=request.proposed_verdict,
             )
 

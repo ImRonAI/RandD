@@ -31,6 +31,7 @@ async def request_photo_approval(
     media_id: str,
     rationale: str,
     item_id: str = "",
+    result_id: str = "",
     asset_id: str = "",
     proposed_verdict: str = "",
 ) -> dict:
@@ -45,7 +46,8 @@ async def request_photo_approval(
         return {"status": "error", "code": "approval_session_unbound", "retryable": True}
     request = registry.request(
         session_id=session_id, inspection_id=inspection_id, media_id=media_id,
-        rationale=rationale, item_id=item_id or None, asset_id=asset_id or None,
+        rationale=rationale, item_id=item_id or None, result_id=result_id or None,
+        asset_id=asset_id or None,
         proposed_verdict=proposed_verdict or None, timeout_seconds=300,
     )
     try:

@@ -77,7 +77,7 @@ def test_asset_is_idempotent_and_only_complete_with_verified_original(repo: Vant
     repo.fail_photo_upload("org-a", failed["id"], "network")
     assert repo.get_asset("org-a", asset["id"])["completion_status"] == "draft"
     original = repo.create_photo_upload("org-a", "user-a", "home-a", room["id"], asset["id"], inspection["id"], "photo-ok")
-    repo.complete_photo_upload("org-a", original["id"], "originals/org-a/a.jpg", "a" * 64, 123, "image/jpeg")
+    repo.complete_photo_upload("org-a", original["id"], f"org-a/home-a/originals/{original['id']}.jpg", "a" * 64, 123, "image/jpeg")
     assert repo.get_asset("org-a", asset["id"])["completion_status"] == "complete"
 
 
@@ -105,16 +105,24 @@ def test_completion_requires_room_and_complete_assets_but_not_optional_metadata(
         repo.complete_onboarding("org-a", "user-a", inspection["id"])
     repo.update_asset("org-a", "user-a", asset["id"], asset_type="Appliance", name="Fridge")
     photo = repo.create_photo_upload("org-a", "user-a", "home-a", room["id"], asset["id"], inspection["id"], "photo")
-    repo.complete_photo_upload("org-a", photo["id"], "originals/org-a/a.jpg", "b" * 64, 20, "image/jpeg")
+    repo.complete_photo_upload("org-a", photo["id"], f"org-a/home-a/originals/{photo['id']}.jpg", "b" * 64, 20, "image/jpeg")
     completed = repo.complete_onboarding("org-a", "user-a", inspection["id"])
     assert completed["status"] == "completed"
     assert repo.get_asset("org-a", asset["id"])["manufacturer"] is None
 
 
 def test_historical_reports_remain_readable(repo: VantageRepository) -> None:
-    repo.record_legacy_report("legacy-1", "Old House Keeping", '{"items": [{"checked": true}]}')
-    report = repo.get_legacy_report("legacy-1")
+    repo.record_legacy_report("org-a", "legacy-1", "Old House Keeping", '{"items": [{"id":"oven-is-clean","label":"Oven is Clean📷 1📝","checked": true}]}')
+    repo.record_legacy_report("org-b", "legacy-1", "Other Tenant", '{"items": []}')
+    report = repo.get_legacy_report("org-a", "legacy-1")
     assert report["property"] == "Old House Keeping"
+    assert repo.get_legacy_report("org-b", "legacy-1")["property"] == "Other Tenant"
+    assert report["legacy_item_states"] == [{
+        "itemKey": "housekeeping.kitchen.oven_clean",
+        "legacyItemId": "oven-is-clean",
+        "checked": True,
+    }]
+    assert "rooms" not in report
 
 
 def test_room_with_active_assets_cannot_be_archived_and_asset_move_is_tenant_safe(repo: VantageRepository) -> None:
@@ -141,15 +149,29 @@ def test_photo_approval_persists_exact_verified_destination(repo: VantageReposit
                               "Appliance", "Refrigerator", "approval-asset")
     photo = repo.create_photo_upload("org-a", "user-a", "home-a", room["id"], asset["id"],
                                      inspection["id"], "approval-photo")
-    repo.complete_photo_upload("org-a", photo["id"], "originals/org-a/photo.jpg", "c" * 64, 20, "image/jpeg")
+    repo.complete_photo_upload("org-a", photo["id"], f"org-a/home-a/originals/{photo['id']}.jpg", "c" * 64, 20, "image/jpeg")
+    item_result = repo.record_inspection_item_result(
+        "org-a", "user-a", inspection_id=inspection["id"],
+        item_key="housekeeping.kitchen.refrigerator_cold_clean", result="PASS",
+        note="cold and clean", client_id="approval-result",
+    )
+    with pytest.raises(DomainError) as unbound_revision:
+        repo.associate_approved_evidence(
+            "org-a", "user-a", inspection_id=inspection["id"], photo_id=photo["id"],
+            item_id="housekeeping.kitchen.refrigerator_cold_clean", result_id=None,
+            asset_id=asset["id"], verdict="PASS",
+        )
+    assert unbound_revision.value.code == "approval_result_required"
     result = repo.associate_approved_evidence(
         "org-a", "user-a", inspection_id=inspection["id"], photo_id=photo["id"],
-        item_id="kitchen.refrigerator", asset_id=asset["id"], verdict="PASS",
+        item_id="housekeeping.kitchen.refrigerator_cold_clean", result_id=item_result["id"],
+        asset_id=asset["id"], verdict="PASS",
     )
-    assert result["photoId"] == photo["id"] and result["itemId"] == "kitchen.refrigerator"
+    assert result["photoId"] == photo["id"] and result["itemId"] == "housekeeping.kitchen.refrigerator_cold_clean"
     with pytest.raises(DomainError) as foreign:
         repo.associate_approved_evidence(
             "org-b", "user-b", inspection_id=inspection["id"], photo_id=photo["id"],
-            item_id="kitchen.refrigerator", asset_id=asset["id"], verdict="PASS",
+            item_id="housekeeping.kitchen.refrigerator_cold_clean", result_id=item_result["id"],
+            asset_id=asset["id"], verdict="PASS",
         )
     assert foreign.value.code == "original_not_verified"

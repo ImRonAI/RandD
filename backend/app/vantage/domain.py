@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
+import re
 import sqlite3
 import uuid
 from collections.abc import Callable
 from typing import Any
 
-from .schema import ROOM_TYPES
+from .schema import INSPECTION_RESULTS, INSPECTION_TYPES, LEGACY_CHECKLIST_ID_TO_KEY, PHOTO_PURPOSES, ROOM_TYPES
 
 
 class DomainError(RuntimeError):
@@ -41,6 +43,27 @@ class VantageRepository:
             raise DomainError("not_found", f"{entity} was not found")
         return dict(row)
 
+    @staticmethod
+    def _require_client_id(client_id: str) -> str:
+        value = client_id.strip()
+        if not value:
+            raise DomainError("client_id_required", "client_id is required", fields={"clientId": "required"})
+        return value
+
+    @staticmethod
+    def _reject_conflicting_replay(existing: sqlite3.Row, expected: dict[str, Any]) -> None:
+        conflicts = {
+            key: "does not match the original request"
+            for key, value in expected.items()
+            if existing[key] != value
+        }
+        if conflicts:
+            raise ConflictError(
+                "idempotency_payload_conflict",
+                "The client_id was already used with a different payload",
+                fields=conflicts,
+            )
+
     def bootstrap_organization(self, organization_id: str, name: str, portfolio_id: str) -> None:
         with self._connection() as c:
             c.execute("INSERT OR IGNORE INTO organization(id,name) VALUES (?,?)", (organization_id, name))
@@ -70,7 +93,8 @@ class VantageRepository:
             return [dict(r) for r in c.execute("SELECT * FROM room_type WHERE organization_id=? AND active=1 ORDER BY name", (organization_id,))]
 
     def start_inspection(self, organization_id: str, user_id: str, home_id: str, inspection_type: str, client_id: str) -> dict[str, Any]:
-        if inspection_type not in {"onboarding", "turnover"}:
+        client_id = self._require_client_id(client_id)
+        if inspection_type not in INSPECTION_TYPES:
             raise DomainError("invalid_inspection_type", "inspection type must be onboarding or turnover")
         with self._connection() as c:
             self._home(c, organization_id, home_id)
@@ -79,6 +103,8 @@ class VantageRepository:
                 inspection_id = str(uuid.uuid4())
                 c.execute("INSERT INTO inspection(organization_id,id,home_id,inspection_type,client_id,created_by) VALUES (?,?,?,?,?,?)", (organization_id, inspection_id, home_id, inspection_type, client_id, user_id))
                 existing = c.execute("SELECT * FROM inspection WHERE organization_id=? AND id=?", (organization_id, inspection_id)).fetchone()
+            else:
+                self._reject_conflicting_replay(existing, {"inspection_type": inspection_type})
             result = dict(existing)
             result["rooms"] = self._rooms(c, organization_id, home_id)
             return result
@@ -91,7 +117,7 @@ class VantageRepository:
             return result
 
     def _rooms(self, c: sqlite3.Connection, organization_id: str, home_id: str) -> list[dict[str, Any]]:
-        return [dict(r) for r in c.execute("SELECT * FROM room WHERE organization_id=? AND home_id=? AND lifecycle_state='active' ORDER BY display_order,created_at", (organization_id, home_id))]
+        return [dict(r) for r in c.execute("SELECT * FROM room WHERE organization_id=? AND home_id=? AND lifecycle_state='active' ORDER BY display_order,created_at,rowid", (organization_id, home_id))]
 
     def list_rooms(self, organization_id: str, home_id: str) -> list[dict[str, Any]]:
         with self._connection() as c:
@@ -106,6 +132,7 @@ class VantageRepository:
             ).fetchone(), "room")
 
     def create_room(self, organization_id: str, user_id: str, home_id: str, inspection_id: str | None, room_type_id: str, name: str, client_id: str) -> dict[str, Any]:
+        client_id = self._require_client_id(client_id)
         if not name.strip():
             raise DomainError("validation_error", "room name is required", fields={"name": "required"})
         with self._connection() as c:
@@ -119,8 +146,19 @@ class VantageRepository:
                 room_id = str(uuid.uuid4())
                 c.execute("INSERT INTO room(organization_id,id,home_id,room_type_id,name,created_by,creating_inspection_id,client_id) VALUES (?,?,?,?,?,?,?,?)", (organization_id, room_id, home_id, room_type_id, name.strip(), user_id, inspection_id, client_id))
                 if inspection_id:
-                    c.execute("INSERT INTO inspection_inventory_link VALUES (?,?,?,?,?)", (organization_id, inspection_id, "room", room_id, "created"))
+                    c.execute(
+                        """INSERT INTO inspection_inventory_link(
+                             organization_id,inspection_id,home_id,entity_type,entity_id,room_id,action)
+                           VALUES (?,?,?,?,?,?,?)""",
+                        (organization_id, inspection_id, home_id, "room", room_id, room_id, "created"),
+                    )
                 existing = c.execute("SELECT * FROM room WHERE organization_id=? AND id=?", (organization_id, room_id)).fetchone()
+            else:
+                self._reject_conflicting_replay(existing, {
+                    "creating_inspection_id": inspection_id,
+                    "room_type_id": room_type_id,
+                    "name": name.strip(),
+                })
             return dict(existing)
 
     def update_room(self, organization_id: str, user_id: str, room_id: str, **changes: Any) -> dict[str, Any]:
@@ -180,6 +218,7 @@ class VantageRepository:
             )
 
     def create_asset(self, organization_id: str, user_id: str, room_id: str, inspection_id: str | None, asset_type: str, name: str, client_id: str) -> dict[str, Any]:
+        client_id = self._require_client_id(client_id)
         with self._connection() as c:
             room = c.execute("SELECT * FROM room WHERE organization_id=? AND id=? AND lifecycle_state='active'", (organization_id, room_id)).fetchone()
             if room is None:
@@ -191,8 +230,19 @@ class VantageRepository:
                 asset_id = str(uuid.uuid4())
                 c.execute("INSERT INTO asset(organization_id,id,home_id,room_id,asset_type,name,created_by,creating_inspection_id,client_id) VALUES (?,?,?,?,?,?,?,?,?)", (organization_id, asset_id, room["home_id"], room_id, asset_type.strip(), name.strip(), user_id, inspection_id, client_id))
                 if inspection_id:
-                    c.execute("INSERT INTO inspection_inventory_link VALUES (?,?,?,?,?)", (organization_id, inspection_id, "asset", asset_id, "created"))
+                    c.execute(
+                        """INSERT INTO inspection_inventory_link(
+                             organization_id,inspection_id,home_id,entity_type,entity_id,asset_id,action)
+                           VALUES (?,?,?,?,?,?,?)""",
+                        (organization_id, inspection_id, room["home_id"], "asset", asset_id, asset_id, "created"),
+                    )
                 existing = c.execute("SELECT * FROM asset WHERE organization_id=? AND id=?", (organization_id, asset_id)).fetchone()
+            else:
+                self._reject_conflicting_replay(existing, {
+                    "creating_inspection_id": inspection_id,
+                    "asset_type": asset_type.strip(),
+                    "name": name.strip(),
+                })
             return dict(existing)
 
     def get_asset(self, organization_id: str, asset_id: str) -> dict[str, Any]:
@@ -246,29 +296,148 @@ class VantageRepository:
             self._refresh_asset_completion(c, organization_id, asset_id)
             return self._dict(c.execute("SELECT * FROM asset WHERE organization_id=? AND id=?", (organization_id, asset_id)).fetchone(), "asset")
 
-    def create_photo_upload(self, organization_id: str, user_id: str, home_id: str, room_id: str, asset_id: str, inspection_id: str | None, client_id: str) -> dict[str, Any]:
+    def create_photo_upload(self, organization_id: str, user_id: str, home_id: str, room_id: str,
+                            asset_id: str, inspection_id: str | None, client_id: str,
+                            purpose: str = "asset_original") -> dict[str, Any]:
+        client_id = self._require_client_id(client_id)
+        if purpose not in PHOTO_PURPOSES:
+            raise DomainError("invalid_photo_purpose", "photo purpose is not supported")
         with self._connection() as c:
             asset = c.execute("SELECT * FROM asset WHERE organization_id=? AND id=? AND home_id=? AND room_id=?", (organization_id, asset_id, home_id, room_id)).fetchone()
             if asset is None:
                 raise DomainError("not_found", "asset was not found")
+            if inspection_id and c.execute(
+                "SELECT 1 FROM inspection WHERE organization_id=? AND id=? AND home_id=?",
+                (organization_id, inspection_id, home_id),
+            ).fetchone() is None:
+                raise DomainError("not_found", "inspection was not found")
             existing = c.execute("SELECT * FROM photo WHERE organization_id=? AND uploader_id=? AND client_id=?", (organization_id, user_id, client_id)).fetchone()
             if existing is None:
                 photo_id = str(uuid.uuid4())
-                c.execute("INSERT INTO photo(organization_id,id,home_id,room_id,asset_id,inspection_id,uploader_id,client_id) VALUES (?,?,?,?,?,?,?,?)", (organization_id, photo_id, home_id, room_id, asset_id, inspection_id, user_id, client_id))
+                c.execute("INSERT INTO photo(organization_id,id,home_id,room_id,asset_id,inspection_id,uploader_id,client_id,purpose) VALUES (?,?,?,?,?,?,?,?,?)", (organization_id, photo_id, home_id, room_id, asset_id, inspection_id, user_id, client_id, purpose))
                 existing = c.execute("SELECT * FROM photo WHERE organization_id=? AND id=?", (organization_id, photo_id)).fetchone()
+            else:
+                self._reject_conflicting_replay(existing, {
+                    "home_id": home_id,
+                    "room_id": room_id,
+                    "asset_id": asset_id,
+                    "inspection_id": inspection_id,
+                    "purpose": purpose,
+                })
             return dict(existing)
 
     def complete_photo_upload(self, organization_id: str, photo_id: str, object_key: str, sha256: str, byte_size: int, mime_type: str) -> dict[str, Any]:
-        if not object_key.startswith(f"originals/{organization_id}/") or len(sha256) != 64 or byte_size <= 0 or not mime_type.startswith("image/"):
-            raise DomainError("invalid_original", "original metadata failed verification")
         with self._connection() as c:
             photo = c.execute("SELECT * FROM photo WHERE organization_id=? AND id=?", (organization_id, photo_id)).fetchone()
             if photo is None:
                 raise DomainError("not_found", "photo upload was not found")
-            c.execute("UPDATE photo SET upload_status='verified',original_object_key=?,sha256=?,byte_size=?,mime_type=?,failure_reason=NULL WHERE organization_id=? AND id=?", (object_key, sha256, byte_size, mime_type, organization_id, photo_id))
+            expected_key = re.compile(
+                rf"^{re.escape(organization_id)}/{re.escape(photo['home_id'])}/originals/"
+                r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\.[A-Za-z0-9]+$"
+            )
+            if (not expected_key.fullmatch(object_key)
+                    or not re.fullmatch(r"[0-9a-fA-F]{64}", sha256)
+                    or byte_size <= 0 or not mime_type.startswith("image/")):
+                raise DomainError("invalid_original", "original metadata failed verification")
+            if photo["upload_status"] == "verified":
+                self._reject_conflicting_replay(photo, {
+                    "original_object_key": object_key,
+                    "sha256": sha256.lower(),
+                    "byte_size": byte_size,
+                    "mime_type": mime_type,
+                })
+                return dict(photo)
+            c.execute("UPDATE photo SET upload_status='verified',original_object_key=?,sha256=?,byte_size=?,mime_type=?,failure_reason=NULL WHERE organization_id=? AND id=?", (object_key, sha256.lower(), byte_size, mime_type, organization_id, photo_id))
             if photo["asset_id"]:
                 self._refresh_asset_completion(c, organization_id, photo["asset_id"])
             return self._dict(c.execute("SELECT * FROM photo WHERE organization_id=? AND id=?", (organization_id, photo_id)).fetchone(), "photo")
+
+    def record_inspection_item_result(self, organization_id: str, user_id: str, *, inspection_id: str,
+                                      item_key: str, result: str, note: str, client_id: str) -> dict[str, Any]:
+        """Append a normalized checklist result revision; exact client replays are safe."""
+        client_id = self._require_client_id(client_id)
+        result = result.strip().upper()
+        if result not in INSPECTION_RESULTS:
+            raise DomainError("invalid_inspection_result", "result must be PASS, FAIL, or NA")
+        with self._connection() as c:
+            inspection = c.execute(
+                "SELECT * FROM inspection WHERE organization_id=? AND id=?",
+                (organization_id, inspection_id),
+            ).fetchone()
+            if inspection is None:
+                raise DomainError("not_found", "inspection was not found")
+            if c.execute("SELECT 1 FROM checklist_item WHERE item_key=? AND active=1", (item_key,)).fetchone() is None:
+                raise DomainError("invalid_checklist_item", "checklist item key is not supported")
+            existing = c.execute(
+                "SELECT * FROM inspection_item_result WHERE organization_id=? AND recorded_by=? AND inspection_id=? AND client_id=?",
+                (organization_id, user_id, inspection_id, client_id),
+            ).fetchone()
+            if existing is not None:
+                self._reject_conflicting_replay(existing, {"item_key": item_key, "result": result, "note": note})
+                return dict(existing)
+            previous = c.execute(
+                "SELECT * FROM inspection_item_result WHERE organization_id=? AND inspection_id=? AND item_key=? ORDER BY version DESC LIMIT 1",
+                (organization_id, inspection_id, item_key),
+            ).fetchone()
+            result_id = str(uuid.uuid4())
+            version = int(previous["version"]) + 1 if previous else 1
+            c.execute(
+                """INSERT INTO inspection_item_result(
+                     organization_id,id,home_id,inspection_id,item_key,result,note,version,
+                     supersedes_result_id,recorded_by,client_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (organization_id, result_id, inspection["home_id"], inspection_id, item_key, result,
+                 note, version, previous["id"] if previous else None, user_id, client_id),
+            )
+            return self._dict(c.execute(
+                "SELECT * FROM inspection_item_result WHERE organization_id=? AND id=?",
+                (organization_id, result_id),
+            ).fetchone(), "inspection item result")
+
+    def attach_result_photo(self, organization_id: str, *, result_id: str, photo_id: str,
+                            display_order: int = 0) -> dict[str, Any]:
+        """Attach one of multiple verified originals without weakening org/home/inspection scope."""
+        with self._connection() as c:
+            result = c.execute(
+                "SELECT * FROM inspection_item_result WHERE organization_id=? AND id=?",
+                (organization_id, result_id),
+            ).fetchone()
+            if result is None:
+                raise DomainError("not_found", "inspection item result was not found")
+            photo = c.execute(
+                """SELECT * FROM photo WHERE organization_id=? AND id=? AND home_id=?
+                   AND inspection_id=? AND upload_status='verified'""",
+                (organization_id, photo_id, result["home_id"], result["inspection_id"]),
+            ).fetchone()
+            if photo is None:
+                raise DomainError("result_photo_mismatch", "photo is not verified for this inspection")
+            existing = c.execute(
+                "SELECT * FROM result_photo WHERE organization_id=? AND result_id=? AND photo_id=?",
+                (organization_id, result_id, photo_id),
+            ).fetchone()
+            if existing is not None:
+                if existing["display_order"] != display_order:
+                    raise ConflictError("idempotency_payload_conflict", "photo is already attached at another display_order")
+                return dict(existing)
+            try:
+                c.execute(
+                    "INSERT INTO result_photo(organization_id,home_id,inspection_id,result_id,photo_id,display_order) VALUES (?,?,?,?,?,?)",
+                    (organization_id, result["home_id"], result["inspection_id"], result_id, photo_id, display_order),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ConflictError("result_photo_order_conflict", "display_order is already used for this result") from exc
+            return self._dict(c.execute(
+                "SELECT * FROM result_photo WHERE organization_id=? AND result_id=? AND photo_id=?",
+                (organization_id, result_id, photo_id),
+            ).fetchone(), "result photo")
+
+    def inspection_result_history(self, organization_id: str, inspection_id: str, item_key: str) -> list[dict[str, Any]]:
+        with self._connection() as c:
+            if c.execute("SELECT 1 FROM inspection WHERE organization_id=? AND id=?", (organization_id, inspection_id)).fetchone() is None:
+                raise DomainError("not_found", "inspection was not found")
+            return [dict(row) for row in c.execute(
+                "SELECT * FROM inspection_item_result WHERE organization_id=? AND inspection_id=? AND item_key=? ORDER BY version",
+                (organization_id, inspection_id, item_key),
+            )]
 
     def fail_photo_upload(self, organization_id: str, photo_id: str, reason: str) -> None:
         with self._connection() as c:
@@ -299,11 +468,14 @@ class VantageRepository:
             return self._dict(c.execute("SELECT * FROM inspection WHERE organization_id=? AND id=?", (organization_id, inspection_id)).fetchone(), "inspection")
 
     def associate_approved_evidence(self, organization_id: str, user_id: str, *, inspection_id: str,
-                                    photo_id: str, item_id: str | None, asset_id: str | None,
+                                    photo_id: str, item_id: str | None, result_id: str | None,
+                                    asset_id: str | None,
                                     verdict: str | None) -> dict[str, str]:
         """Atomically attach a verified original and its human verdict."""
         if not item_id and not asset_id:
             raise DomainError("approval_destination_required", "An inspection item or asset is required")
+        if verdict is not None and verdict not in {*INSPECTION_RESULTS, "REVIEW"}:
+            raise DomainError("invalid_approval_verdict", "verdict must be PASS, FAIL, NA, or REVIEW")
         with self._connection() as c:
             photo = c.execute(
                 "SELECT * FROM photo WHERE organization_id=? AND id=? AND inspection_id=? AND upload_status='verified'",
@@ -316,25 +488,70 @@ class VantageRepository:
                 (organization_id, asset_id, photo["home_id"]),
             ).fetchone() is None):
                 raise DomainError("approval_destination_mismatch", "The asset and original do not belong together")
-            approval_id = str(uuid.uuid4())
-            c.execute(
-                """INSERT INTO evidence_approval(organization_id,id,inspection_id,photo_id,item_id,asset_id,verdict,approved_by)
-                   VALUES (?,?,?,?,?,?,?,?)
-                   ON CONFLICT(organization_id,inspection_id,photo_id,item_id,asset_id) DO UPDATE SET
-                     verdict=excluded.verdict,approved_by=excluded.approved_by,approved_at=CURRENT_TIMESTAMP""",
-                (organization_id, approval_id, inspection_id, photo_id, item_id, asset_id, verdict, user_id),
-            )
+            if item_id:
+                if not result_id:
+                    raise DomainError("approval_result_required", "The exact checklist result revision is required")
+                item_result = c.execute(
+                    """SELECT * FROM inspection_item_result WHERE organization_id=? AND inspection_id=?
+                       AND item_key=? AND id=?""",
+                    (organization_id, inspection_id, item_id, result_id),
+                ).fetchone()
+                if item_result is None:
+                    raise DomainError("approval_result_mismatch", "The checklist result revision does not match the approval")
+            elif result_id:
+                raise DomainError("approval_item_required", "item_id is required when result_id is supplied")
             row = c.execute(
-                "SELECT id FROM evidence_approval WHERE organization_id=? AND inspection_id=? AND photo_id=? AND item_id IS ? AND asset_id IS ?",
-                (organization_id, inspection_id, photo_id, item_id, asset_id),
+                """SELECT id FROM evidence_approval WHERE organization_id=? AND inspection_id=?
+                   AND photo_id=? AND result_id IS ? AND asset_id IS ?""",
+                (organization_id, inspection_id, photo_id, result_id, asset_id),
             ).fetchone()
+            if row is None:
+                approval_id = str(uuid.uuid4())
+                c.execute(
+                    """INSERT INTO evidence_approval(
+                         organization_id,id,home_id,inspection_id,photo_id,item_id,result_id,
+                         asset_id,verdict,approved_by) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    (organization_id, approval_id, photo["home_id"], inspection_id, photo_id,
+                     item_id, result_id, asset_id, verdict, user_id),
+                )
+                row = c.execute(
+                    "SELECT id FROM evidence_approval WHERE organization_id=? AND id=?",
+                    (organization_id, approval_id),
+                ).fetchone()
+            else:
+                c.execute(
+                    """UPDATE evidence_approval SET verdict=?,approved_by=?,approved_at=CURRENT_TIMESTAMP
+                       WHERE organization_id=? AND id=?""",
+                    (verdict, user_id, organization_id, row["id"]),
+                )
             return {"approvalId": str(row["id"]), "photoId": photo_id,
                     "inspectionId": inspection_id, "itemId": item_id or "", "assetId": asset_id or ""}
 
-    def record_legacy_report(self, report_id: str, property_name: str, state_json: str) -> None:
+    def record_legacy_report(self, organization_id: str, report_id: str,
+                             property_name: str, state_json: str) -> None:
         with self._connection() as c:
-            c.execute("INSERT OR REPLACE INTO legacy_inspection_report(id,property,state_json) VALUES (?,?,?)", (report_id, property_name, state_json))
+            c.execute(
+                """INSERT OR REPLACE INTO legacy_inspection_report(
+                     organization_id,id,property,state_json) VALUES (?,?,?,?)""",
+                (organization_id, report_id, property_name, state_json),
+            )
 
-    def get_legacy_report(self, report_id: str) -> dict[str, Any]:
+    def get_legacy_report(self, organization_id: str, report_id: str) -> dict[str, Any]:
         with self._connection() as c:
-            return self._dict(c.execute("SELECT * FROM legacy_inspection_report WHERE id=?", (report_id,)).fetchone(), "legacy report")
+            report = self._dict(c.execute(
+                "SELECT * FROM legacy_inspection_report WHERE organization_id=? AND id=?",
+                (organization_id, report_id),
+            ).fetchone(), "legacy report")
+            state = json.loads(report["state_json"])
+            # Historical reports stored only `checked`; it is not equivalent to
+            # PASS/FAIL/NA. Route by stable item id because exported labels can
+            # contain photo/note decorations. Never synthesize Room inventory.
+            report["legacy_item_states"] = [
+                {
+                    "itemKey": LEGACY_CHECKLIST_ID_TO_KEY.get(str(item.get("id", ""))),
+                    "legacyItemId": item.get("id"),
+                    "checked": bool(item.get("checked")),
+                }
+                for item in state.get("items", [])
+            ]
+            return report
