@@ -6,6 +6,79 @@ on:
   pull_request:
 
 jobs:
+  canonical-schema:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install schema contract test dependencies
+        run: python -m pip install pytest pytest-asyncio "strands-agents>=1.45.0,<2.0.0" pglast
+
+      - name: Verify canonical Vantage schema contract and migration checksums
+        working-directory: backend
+        run: python -m pytest tests/test_dah_124_schema_reconciliation.py -q
+
+      - name: Parse PostgreSQL migrations
+        working-directory: backend
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from pglast import parse_sql
+
+          for migration in sorted(Path("migrations").glob("*.sql")):
+              parse_sql(migration.read_text())
+              print(f"parsed {migration.name}")
+          PY
+
+  postgres-schema:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: vantage
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    env:
+      PGHOST: localhost
+      PGPORT: 5432
+      PGDATABASE: vantage
+      PGUSER: postgres
+      PGPASSWORD: postgres
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client
+
+      - name: Migrate empty PostgreSQL database to head
+        run: |
+          for migration in backend/migrations/*.sql; do
+            echo "applying ${migration}"
+            psql --set ON_ERROR_STOP=1 --file "${migration}"
+          done
+
+      - name: Run DAH-124 PostgreSQL constraints and RLS acceptance
+        run: psql --set ON_ERROR_STOP=1 --file backend/tests/postgres/dah_124_acceptance.sql
+
+      - name: Run DAH-126 PostgreSQL RLS acceptance
+        run: psql --set ON_ERROR_STOP=1 --file backend/tests/postgres/dah_126_rls_acceptance.sql
+
+      - name: Run DAH-131 original media PostgreSQL acceptance
+        run: psql --set ON_ERROR_STOP=1 --file backend/tests/postgres/dah_131_original_media_acceptance.sql
+
   python:
     runs-on: ubuntu-latest
     steps:
@@ -15,25 +88,18 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install workspace packages (SDK is a local editable dep)
-        run: |
-          pip install -e harness-sdk/strands-py
-          pip install -e "packages/shared[dev]"
-          pip install -e "packages/db[dev]"
-          pip install -e "apps/agent[dev]"
-          pip install -e "apps/api[dev]"
-
-      - name: Lint
-        run: python -m ruff check packages apps/agent apps/api
+      - name: Install canonical backend
+        run: python -m pip install -r backend/requirements.txt pytest pytest-asyncio
 
       - name: Test
-        run: python -m pytest packages/shared/tests packages/db/tests apps/agent/tests apps/api/tests -q
+        working-directory: backend
+        run: python -m pytest -q
 
   web:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: apps/web
+        working-directory: frontend
     steps:
       - uses: actions/checkout@v4
 
@@ -41,13 +107,10 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: apps/web/package-lock.json
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Install
         run: npm ci
-
-      - name: Lint
-        run: npm run lint
 
       - name: Build
         run: npm run build

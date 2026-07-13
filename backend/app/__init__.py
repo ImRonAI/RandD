@@ -1,4 +1,4 @@
-"""RandD Live FastAPI backend."""
+"""Vantage AI FastAPI backend."""
 
 import os
 from pathlib import Path
@@ -20,4 +20,5 @@ if os.getenv("AWS_REGION") and not os.getenv("AWS_DEFAULT_REGION"):
 # the slack tools always initialize with a live token.
 from app.slack_token import ensure_fresh_bot_token  # noqa: E402
 
-ensure_fresh_bot_token()
+if os.getenv("VANTAGE_SKIP_SLACK_REFRESH") != "1":
+    ensure_fresh_bot_token()

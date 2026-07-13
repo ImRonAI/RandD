@@ -1,0 +1,14 @@
+{
+  "organization_id": "10000000-0000-0000-0000-000000000127",
+  "organization_name": "Sanitized Import Organization",
+  "portfolio_id": "20000000-0000-0000-0000-000000000127",
+  "portfolio_name": "Sanitized Portfolio",
+  "legacy_timezone": "America/Los_Angeles",
+  "sources": [
+    {
+      "name": "sanitized-fixture",
+      "path": "REPLACED_BY_TEST",
+      "sha256": "REPLACED_BY_TEST"
+    }
+  ]
+}

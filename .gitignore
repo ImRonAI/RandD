@@ -37,3 +37,6 @@ frontend/dist/
 backend/.backend-venv/
 backend/.venv/
 backend/workspace/
+
+# Playwright CLI logs
+.playwright-cli/

@@ -8,6 +8,7 @@ from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 from strands.tools.registry import ToolRegistry
 
 from app.agent import DEFAULT_MODEL_ID, DEFAULT_PROVIDER, PROVIDERS, TOOLS, create_agent
@@ -16,6 +17,12 @@ from app.io import BidiWebSocketInput, BidiWebSocketOutput
 from app.memory import memory_tools
 from app.prompts import SYSTEM_PROMPT
 from app.transcribe import compress_clip, measure_loudness, transcribe_audio
+from app.approval_registry import ApprovalRegistry, ApprovalResolution
+from app.approval_tools import approval_scope
+from app.vantage.api import create_vantage_router
+from app.vantage.auth_api import create_auth_router, session_context
+from app.vantage.google_day_api import create_google_day_router
+from app.vantage.runtime import build_runtime
 
 os.environ.setdefault("STRANDS_NON_INTERACTIVE", "true")
 os.environ.setdefault("BYPASS_TOOL_CONSENT", "true")
@@ -23,15 +30,50 @@ os.environ.setdefault("BYPASS_TOOL_CONSENT", "true")
 WORKSPACE_DIR = Path(__file__).resolve().parent.parent / "workspace"
 WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="RandD Live Backend")
+app = FastAPI(title="Vantage AI Backend")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[origin.strip() for origin in os.getenv("VANTAGE_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if origin.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 app.mount("/workspace", StaticFiles(directory=WORKSPACE_DIR), name="workspace")
+
+VANTAGE = build_runtime()
+_session_dependency = session_context(VANTAGE)
+
+
+@app.middleware("http")
+async def protect_tenant_surfaces(request: Request, call_next):
+    """Keep legacy field/media routes behind the same verified session.
+
+    New Vantage routers also authorize entity access; this middleware closes
+    the older unscoped HTTP entry points while they are incrementally ported.
+    """
+    public = {"/api/auth/code/request", "/api/auth/code/verify"}
+    protected = request.url.path.startswith((
+        "/api/field", "/api/inspection", "/api/properties", "/api/inspectors",
+        "/api/workspace", "/workspace",
+    ))
+    if protected and request.url.path not in public:
+        try:
+            VANTAGE.context_from_token(request.cookies.get("vantage_session"))
+        except Exception:
+            return JSONResponse(status_code=401, content={"error": {
+                "code": "not_authenticated", "message": "A valid Vantage session is required",
+                "retryable": False, "fields": {},
+            }})
+    return await call_next(request)
+
+app.include_router(create_auth_router(VANTAGE))
+app.include_router(create_vantage_router(VANTAGE.repository, _session_dependency, VANTAGE.media_service))
+app.include_router(create_google_day_router(
+    calendar=VANTAGE.calendar,
+    places=VANTAGE.places,
+    navigation=VANTAGE.navigation,
+    context_dependency=_session_dependency,
+))
 
 REPORTS_DIR = WORKSPACE_DIR / "reports"
 LATEST_REPORT = REPORTS_DIR / "inspection-report-latest.html"
@@ -166,7 +208,7 @@ def tool_list() -> list[dict[str, str]]:
     global _tool_list_cache
     if _tool_list_cache is None:
         registry = ToolRegistry()
-        registry.process_tools(TOOLS + memory_tools())
+        registry.process_tools(TOOLS)
         tools = []
         for spec in registry.get_all_tool_specs():
             description = str(spec.get("description", ""))
@@ -180,7 +222,7 @@ def tool_list() -> list[dict[str, str]]:
 @app.get("/api/agent")
 async def get_agent() -> dict[str, Any]:
     return {
-        "name": "RandD Live",
+        "name": "Vantage AI",
         "model": os.getenv("GEMINI_LIVE_MODEL", DEFAULT_MODEL_ID),
         "instructions": SYSTEM_PROMPT,
         "tools": tool_list(),
@@ -228,6 +270,45 @@ async def get_inspectors() -> dict[str, Any]:
     return {"inspectors": await run_in_threadpool(list_inspectors)}
 
 
+# ── Field app (Vantage mobile) read endpoints — real data, additive only ─────
+
+
+@app.get("/api/field/clusters")
+async def field_clusters() -> dict[str, Any]:
+    from app.field_api import list_clusters
+
+    return {"clusters": await run_in_threadpool(list_clusters)}
+
+
+@app.get("/api/field/day")
+async def field_day(cluster: int | None = Query(default=None)) -> dict[str, Any]:
+    from app.field_api import list_day
+
+    return {"tasks": await run_in_threadpool(list_day, cluster)}
+
+
+@app.get("/api/field/property/{property_id}")
+async def field_property(property_id: int) -> dict[str, Any]:
+    from app.field_api import property_detail
+
+    detail = await run_in_threadpool(property_detail, property_id)
+    return detail or {}
+
+
+@app.get("/api/field/checklist")
+async def field_checklist() -> dict[str, Any]:
+    from app.field_api import checklist
+
+    return {"sections": await run_in_threadpool(checklist)}
+
+
+@app.get("/api/field/notifications")
+async def field_notifications() -> dict[str, Any]:
+    from app.field_api import list_notifications
+
+    return {"notifications": await run_in_threadpool(list_notifications)}
+
+
 @app.get("/api/workspace")
 async def get_workspace() -> dict[str, Any]:
     files = [
@@ -241,6 +322,7 @@ async def get_workspace() -> dict[str, Any]:
 @app.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
+    token: str = Query(...),
     mode: str = Query("audio", pattern="^(audio|text)$"),
     voice: str = Query("Puck"),
     provider: str = Query(DEFAULT_PROVIDER, pattern="^(gemini|openai|nova)$"),
@@ -251,6 +333,16 @@ async def websocket_endpoint(
     supervises input/output tasks in the harness task group, executes tools
     concurrently, and tears everything down via ``stop_all``.
     """
+    if VANTAGE.token_service is None:
+        await websocket.close(code=1013, reason="Vantage authentication is not configured")
+        return
+    try:
+        claims = VANTAGE.token_service.consume_ws_token(token)
+        context = VANTAGE.context_from_claims(claims)
+    except Exception:
+        await websocket.close(code=4401, reason="Invalid or replayed WebSocket token")
+        return
+    session_id = str(claims["jti"])
     await websocket.accept()
     if not PROVIDERS.get(provider, {}).get("enabled", True):
         await websocket.send_text(
@@ -261,11 +353,47 @@ async def websocket_endpoint(
     try:
         # Inside the try so construction failures (missing credentials, model
         # deps) reach the browser as bidi_error instead of a dead socket.
-        agent = create_agent(mode=mode, voice=voice, provider=provider)
-        await agent.run(
-            inputs=[BidiWebSocketInput(websocket)],
-            outputs=[BidiWebSocketOutput(websocket)],
-        )
+        def emit_approval(event: dict[str, Any]) -> None:
+            __import__("asyncio").create_task(websocket.send_text(json.dumps(event, default=str)))
+
+        def associate_approval(request, resolution) -> dict[str, str]:
+            return VANTAGE.repository.associate_approved_evidence(
+                context.organization_id, context.user_id,
+                inspection_id=request.inspection_id, photo_id=request.media_id,
+                item_id=request.item_id, result_id=request.result_id, asset_id=request.asset_id,
+                verdict=request.proposed_verdict,
+            )
+
+        registry = ApprovalRegistry(event_sink=emit_approval, associate_approval=associate_approval,
+                                    conversation_sink=emit_approval)
+
+        async def resolve_approval(payload: dict[str, Any]) -> None:
+            try:
+                registry.resolve(
+                    session_id=session_id,
+                    resolution=ApprovalResolution(
+                        approval_id=str(payload.get("approvalId") or ""),
+                        decision=str(payload.get("decision") or ""),
+                        feedback=payload.get("feedback"),
+                        input_mode=payload.get("inputMode"),
+                    ),
+                )
+            except Exception as exc:
+                await websocket.send_text(json.dumps({
+                    "type": "approval_error", "approvalId": payload.get("approvalId"),
+                    "error": str(exc),
+                }))
+
+        privileged = context.has_role("ORG_ADMIN") and os.getenv("VANTAGE_PLATFORM_ADMIN_TOOLS", "false").lower() in {"1", "true", "yes"}
+        agent = create_agent(mode=mode, voice=voice, provider=provider, privileged=privileged)
+        with browser_camera.session_scope(session_id), approval_scope(session_id, registry):
+            try:
+                await agent.run(
+                    inputs=[BidiWebSocketInput(websocket, approval_resolver=resolve_approval)],
+                    outputs=[BidiWebSocketOutput(websocket)],
+                )
+            finally:
+                browser_camera.discard_session(session_id)
     except WebSocketDisconnect:
         pass
     except Exception as exc:

@@ -9,6 +9,7 @@ cleanup. We do not hand-roll a bridge around ``send``/``receive``.
 
 import base64
 import json
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fastapi import WebSocket
@@ -40,8 +41,14 @@ def _sanitize(value: Any) -> Any:
 class BidiWebSocketInput:
     """BidiInput protocol: reads browser frames, yields vendored TypedEvents."""
 
-    def __init__(self, websocket: WebSocket) -> None:
+    def __init__(
+        self,
+        websocket: WebSocket,
+        *,
+        approval_resolver: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    ) -> None:
         self._websocket = websocket
+        self._approval_resolver = approval_resolver
 
     async def start(self, agent: Any) -> None:  # noqa: ANN401 (protocol signature)
         return
@@ -56,6 +63,28 @@ class BidiWebSocketInput:
             if not isinstance(data, dict):
                 continue
             event_type = data.pop("type", None)
+            if event_type == "user_message":
+                text = str(data.get("text") or "").strip()
+                if text:
+                    return BidiTextInputEvent(text=text)
+                continue
+            if event_type == "approval_resolved":
+                if self._approval_resolver is not None:
+                    await self._approval_resolver(data)
+                continue
+            if event_type == "camera_capture":
+                encoded = data.get("dataUrl")
+                if not isinstance(encoded, str) or not encoded:
+                    continue
+                mime_type = str(data.get("mimeType") or "image/jpeg")
+                if encoded.startswith("data:") and "," in encoded:
+                    header, encoded = encoded.split(",", 1)
+                    if ";base64" in header:
+                        mime_type = header[5:].split(";", 1)[0] or mime_type
+                from app.browser_camera import add_frame
+
+                add_frame(encoded)
+                return BidiImageInputEvent(image=encoded, mime_type=mime_type)
             if event_type == "bidi_text_input":
                 return BidiTextInputEvent(**data)
             if event_type == "bidi_audio_input":

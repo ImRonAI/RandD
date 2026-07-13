@@ -4,12 +4,14 @@ from typing import Any
 from app import _vendor  # noqa: F401  (must run before strands.experimental.bidi imports)
 from strands.experimental.bidi.agent import BidiAgent
 from strands_tools import editor, environment, http_request, load_tool, mcp_client, shell
+
 from strands_tools.slack import slack, slack_send_message
 from strands_google.google_auth import google_auth
 from strands_google.gmail_helpers import gmail_reply, gmail_send
 from strands_google.use_google import use_google
 
 from app.camera_control import control_camera
+from app.approval_tools import request_photo_approval
 from app.capture_tools import take_photo, take_video
 from app.gmail_attachments import gmail_send_with_attachments
 from app.kb_archive import archive_inspection_report, save_site_memory
@@ -71,13 +73,6 @@ PROVIDERS: dict[str, dict[str, Any]] = {
 }
 
 TOOLS = [
-    editor.editor,
-    shell.shell,
-    load_tool.load_tool,
-    list_library_tools,
-    mcp_client.mcp_client,
-    http_request,  # module-based tool (TOOL_SPEC + function)
-    environment,  # module-based tool (TOOL_SPEC + function)
     # QC turnover inspection journal (routes to the live checklist form)
     list_checklist_items,
     record_checklist_result,
@@ -85,30 +80,29 @@ TOOLS = [
     attach_item_photo,
     # Inspector's browser camera (frontend executes the start/stop/snap)
     control_camera,
-    # Slack delivery (Addendum 1): reports via files_upload_v2, notes via messages
-    slack,
-    slack_send_message,
-    # Reliable inspection-form delivery (resolves the path itself; preferred)
-    send_report_to_slack,
-    # Google Workspace (strands-google): 200+ APIs via service account / OAuth
-    use_google,
-    google_auth,
-    gmail_send,
-    gmail_reply,
-    gmail_send_with_attachments,
+    request_photo_approval,
     # Device-camera capture: browser stream first, server hardware fallback
     take_photo,
     take_video,
-    # Access recorded walkthrough clips after the fact (list + deliver)
+    # Access session-scoped walkthrough clips after the fact.
     list_walkthrough_videos,
-    send_video_to_slack,
-    # Archive the latest inspection form into the KB's S3 bucket (memory + artifact)
-    archive_inspection_report,
-    # Per-house site memories that don't come from inspections
-    save_site_memory,
     # YOLO object detection over the device-camera stream
     yolo_vision,
 ]
+
+# Arbitrary code, environment, dynamic loading, and MCP passthrough are never
+# exposed to field roles. They exist only for an explicitly enabled, sandboxed
+# platform-admin development profile.
+ADMIN_TOOLS = [
+    editor.editor, shell.shell, load_tool.load_tool, list_library_tools,
+    mcp_client.mcp_client, http_request, environment, slack, slack_send_message,
+    send_report_to_slack, use_google, google_auth, gmail_send, gmail_reply,
+    gmail_send_with_attachments, send_video_to_slack, archive_inspection_report,
+    save_site_memory,
+]
+
+# The generic handoff tool is intentionally not registered: Vantage uses the
+# correlated, persisted `request_photo_approval` protocol above.
 
 
 def build_model(provider: str, mode: str, voice: str) -> Any:
@@ -172,13 +166,13 @@ def build_model(provider: str, mode: str, voice: str) -> Any:
     )
 
 
-def create_agent(mode: str, voice: str, provider: str = DEFAULT_PROVIDER) -> BidiAgent:
+def create_agent(mode: str, voice: str, provider: str = DEFAULT_PROVIDER, *, privileged: bool = False) -> BidiAgent:
     """Create one BidiAgent per connection, on the requested vended provider."""
     model = build_model(provider, mode, voice)
     return BidiAgent(
         model=model,
-        tools=TOOLS + memory_tools(),
+        tools=TOOLS + (ADMIN_TOOLS + memory_tools() if privileged else []),
         system_prompt=SYSTEM_PROMPT,
-        name="RandD Live",
-        description="Real-time Gemini Live meta-tooling agent (editor, shell, load_tool).",
+        name="Vantage AI",
+        description="Tenant-scoped real-time field operations and property inspection agent.",
     )
