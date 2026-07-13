@@ -229,7 +229,11 @@ def test_agent_uses_unrestricted_core_and_session_tools(monkeypatch):
         session_tools=[session_inventory_tool],
     )
 
-    names = {getattr(item, "tool_name", getattr(item, "__name__", "")) for item in captured["tools"]}
+    names = {
+        getattr(item, "tool_name", "")
+        or getattr(item, "__name__", "").rsplit(".", 1)[-1]
+        for item in captured["tools"]
+    }
     assert {
         "shell",
         "editor",

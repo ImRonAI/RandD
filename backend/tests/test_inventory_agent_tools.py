@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 
 from app.inventory_tools import build_inventory_tools
+from app.prompts import SYSTEM_PROMPT
 from app.vantage.context import TenantContext
 
 
@@ -67,6 +68,13 @@ def test_inventory_tool_factory_exposes_onboarding_operations() -> None:
     } <= names
 
 
+def test_system_prompt_adds_direct_asset_metadata_guidance_without_losing_existing_instructions() -> None:
+    assert "## QC TURNOVER INSPECTIONS (camera + checklist)" in SYSTEM_PROMPT
+    assert "## LONG-TERM MEMORY" in SYSTEM_PROMPT
+    assert "pass known canonical asset fields directly to create_asset" in SYSTEM_PROMPT
+    assert "record_asset_research_value preserves provenance" in SYSTEM_PROMPT
+
+
 def test_inventory_tools_bind_identity_and_transaction_mode() -> None:
     adapter = RecordingAdapter()
     tools = _tools(adapter)
@@ -107,6 +115,70 @@ def test_create_home_and_inspection_use_server_tenant_context() -> None:
         "start_inspection",
         ("org-1", "user-1", "home-1", "onboarding", "inspection-client"),
         {},
+    )
+
+
+def test_create_asset_exposes_and_forwards_full_metadata_fields() -> None:
+    adapter = RecordingAdapter()
+    create_asset = _tools(adapter)["create_asset"]
+    properties = create_asset.tool_spec["inputSchema"]["json"]["properties"]
+
+    for field in (
+        "manufacturer",
+        "model_number",
+        "serial_number",
+        "quantity",
+        "purchase_date",
+        "purchase_price",
+        "estimated_replacement_cost",
+        "warranty_provider",
+        "warranty_expiration",
+        "tags",
+    ):
+        assert field in properties
+    assert "metadata" not in properties
+
+    create_asset(
+        room_id="room-1",
+        client_id="asset-client",
+        asset_type="irrigation",
+        name="Irrigation Controller",
+        inspection_id="inspection-1",
+        manufacturer="Rain Bird",
+        model_number="ESP-TM2",
+        serial_number="RB-001",
+        quantity=1,
+        purchase_date="2025-03-15",
+        purchase_price="189.99",
+        estimated_replacement_cost="2499.00",
+        warranty_provider="Rain Bird",
+        warranty_expiration="2028-03-15",
+        tags=["outdoor", "irrigation"],
+    )
+
+    assert adapter.repository.calls[-1] == (
+        "create_asset",
+        (
+            "org-1",
+            "user-1",
+            "room-1",
+            "inspection-1",
+            "irrigation",
+            "Irrigation Controller",
+            "asset-client",
+        ),
+        {
+            "manufacturer": "Rain Bird",
+            "model_number": "ESP-TM2",
+            "serial_number": "RB-001",
+            "quantity": 1,
+            "purchase_date": "2025-03-15",
+            "purchase_price": "189.99",
+            "estimated_replacement_cost": "2499.00",
+            "warranty_provider": "Rain Bird",
+            "warranty_expiration": "2028-03-15",
+            "tags": ["outdoor", "irrigation"],
+        },
     )
 
 
