@@ -5,7 +5,6 @@ with WebSocket connections, voice activity detection, and function calling.
 """
 
 import asyncio
-import copy
 import json
 import logging
 import os
@@ -256,8 +255,7 @@ class BidiOpenAIRealtimeModel(BidiModel):
 
     def _build_session_config(self, system_prompt: str | None, tools: list[ToolSpec] | None) -> dict[str, Any]:
         """Build session configuration for OpenAI Realtime API."""
-        # Deep copy so per-instance audio/voice overrides never mutate the module-level defaults
-        config: dict[str, Any] = copy.deepcopy(DEFAULT_SESSION_CONFIG)
+        config: dict[str, Any] = DEFAULT_SESSION_CONFIG.copy()
 
         if system_prompt:
             config["instructions"] = system_prompt
