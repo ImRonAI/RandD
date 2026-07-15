@@ -1,5 +1,17 @@
 # Agentic Short-Term Rental Quality Control Platform
 
+> ## 🔒 NONNEGOTIABLE — Do not change the agent tool configuration
+>
+> **Nobody — human or agent — changes the agent's tool configuration unless the user explicitly asks for that specific change.** Do not "clean it up," remove "unused" imports, reorder, wrap, or add tools you think are missing. If you believe a change is warranted, stop and ask first.
+>
+> The configuration is deliberate and is defined by:
+> - **`backend/app/agent.py` → `TOOLS`**: the baseline registry is **exactly six core meta-tooling tools** — `editor, shell, load_tool, mcp_client, http_request, environment` — and nothing else.
+> - **`backend/app/agent.py` imports**: **all tool imports are intentionally preserved** even though only the six are registered, so every tool module stays importable and its file path resolvable for `load_tool`. **Do not remove or trim them.**
+> - **`backend/app/main.py`**: the per-connection session-tool injection (native `browser`, `perplexity_agent`, inventory/onboarding, tenant Slack, Smarty MCP, long-term memory) — do not change what is injected.
+> - **`backend/app/prompts.py`**: the meta-tooling system prompt — do not rewrite or overwrite it.
+>
+> **Design intent:** the agent is a *meta-tooling agent*. Only the six core primitives are registered up front to keep the model's tool declarations small (context window); every other tool is hot-loaded on demand at runtime via the native `load_tool` tool (from its Python file path), and remote tools via `mcp_client`. Session-scoped tools that cannot be loaded from a file stay injected per connection. See `CLAUDE.md` for the full rule.
+
 ## Executive Summary
 
 This document defines the product requirements for an agentic short-term rental (STR) quality control platform focused on operational reliability, multi-stakeholder coordination, and photo-verified inspections across a geographically concentrated portfolio (e.g., Big Bear Lake, CA). The platform is designed around an AI-native, strands-based main agent powered by a reasoning-capable LLM (e.g., Gemini Live) with access to cameras, journals, memory, telephony, email, Slack, and Google tools.
