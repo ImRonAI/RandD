@@ -15,12 +15,8 @@ from strands import tool
 
 from app import browser_camera
 
-_lock = threading.Lock()
-_monitor_thread: threading.Thread | None = None
-_monitor_active = False
-_history: list[dict] = []  # [{ts, objects: {label: count}}]
-_totals: dict[str, int] = defaultdict(int)
 _model = None
+_model_lock = threading.Lock()
 
 
 def _load_model(model_name: str = "yolov8n.pt"):
@@ -32,41 +28,80 @@ def _load_model(model_name: str = "yolov8n.pt"):
     return _model
 
 
-def _detect_jpeg(jpeg: bytes, confidence: float) -> dict[str, int]:
+def _serialize_result(result: Any) -> dict[str, Any]:
+    """Serialize official Ultralytics ``Results.boxes`` into normalized UI metadata."""
+    def values(data: Any) -> list[Any]:
+        if hasattr(data, "cpu"):
+            data = data.cpu()
+        return data.tolist()
+
+    coordinates = values(result.boxes.xyxyn)
+    confidences = values(result.boxes.conf)
+    class_ids = values(result.boxes.cls)
+    detections = []
+    objects: dict[str, int] = defaultdict(int)
+    for box, score, class_id in zip(coordinates, confidences, class_ids, strict=True):
+        label = result.names[int(class_id)]
+        detections.append(
+            {
+                "x1": float(box[0]),
+                "y1": float(box[1]),
+                "x2": float(box[2]),
+                "y2": float(box[3]),
+                "confidence": float(score),
+                "classId": int(class_id),
+                "label": label,
+            }
+        )
+        objects[label] += 1
+    height, width = result.orig_shape
+    return {
+        "width": int(width),
+        "height": int(height),
+        "detections": detections,
+        "objects": dict(sorted(objects.items())),
+    }
+
+
+def _detect_jpeg(jpeg: bytes, confidence: float) -> dict[str, Any]:
     import cv2
     import numpy as np
 
     img = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
     if img is None:
-        return {}
+        return {"width": 0, "height": 0, "detections": [], "objects": {}}
     model = _load_model()
-    results = model(img, conf=confidence, verbose=False)
-    objects: dict[str, int] = defaultdict(int)
-    for result in results:
-        for box in result.boxes:
-            objects[model.names[int(box.cls[0])]] += 1
-    return dict(objects)
+    with _model_lock:
+        result = model(img, conf=confidence, verbose=False)[0]
+    return _serialize_result(result)
 
 
-def _monitor_worker(confidence: float, interval: float) -> None:
-    global _monitor_active
-    last_ts = 0.0
-    while _monitor_active:
-        frame = browser_camera.latest_frame()
-        if frame and frame.ts > last_ts:
-            last_ts = frame.ts
-            try:
-                objects = _detect_jpeg(frame.jpeg, confidence)
-            except Exception:
-                objects = {}
-            if objects:
-                with _lock:
-                    _history.append({"ts": frame.ts, "objects": objects})
-                    if len(_history) > 500:
-                        del _history[:100]
-                    for label, count in objects.items():
-                        _totals[label] = max(_totals[label], count)
-        time.sleep(interval)
+def _publish_analysis(frame_ts: float, analysis: dict[str, Any]) -> None:
+    browser_camera.publish_detections(
+        {
+            "type": "yolo_detections",
+            "timestamp": frame_ts,
+            "width": analysis["width"],
+            "height": analysis["height"],
+            "detections": analysis["detections"],
+        },
+        analysis["objects"],
+    )
+
+
+def _monitor_worker(session_id: str, confidence: float, interval: float) -> None:
+    with browser_camera.session_scope(session_id):
+        last_ts = 0.0
+        while browser_camera.detection_monitor_active():
+            frame = browser_camera.latest_frame()
+            if frame and frame.ts > last_ts:
+                last_ts = frame.ts
+                try:
+                    analysis = _detect_jpeg(frame.jpeg, confidence)
+                except Exception:
+                    analysis = {"width": 0, "height": 0, "detections": [], "objects": {}}
+                _publish_analysis(frame.ts, analysis)
+            time.sleep(interval)
 
 
 @tool
@@ -86,7 +121,6 @@ def yolo_vision(action: str = "detect", confidence: float = 0.4, interval: float
     Returns:
         Dict with status and detected objects.
     """
-    global _monitor_thread, _monitor_active
     try:
         confidence = max(0.1, min(float(confidence), 0.9))
         action = action.strip().lower()
@@ -98,14 +132,16 @@ def yolo_vision(action: str = "detect", confidence: float = 0.4, interval: float
                     "status": "error",
                     "content": [{"text": '❌ No live camera stream — call control_camera("start") first.'}],
                 }
-            objects = _detect_jpeg(frame.jpeg, confidence)
+            analysis = _detect_jpeg(frame.jpeg, confidence)
+            _publish_analysis(frame.ts, analysis)
+            objects = analysis["objects"]
             if not objects:
                 return {"status": "success", "content": [{"text": "👁 No objects detected in the current view."}]}
             listing = ", ".join(f"{label} ×{count}" for label, count in sorted(objects.items()))
             return {"status": "success", "content": [{"text": f"👁 Current view: {listing}"}]}
 
         if action == "start":
-            if _monitor_active:
+            if browser_camera.detection_monitor_active():
                 return {"status": "success", "content": [{"text": "👁 Monitoring already running."}]}
             if browser_camera.wait_for_frame() is None:
                 return {
@@ -113,25 +149,28 @@ def yolo_vision(action: str = "detect", confidence: float = 0.4, interval: float
                     "content": [{"text": '❌ No live camera stream — call control_camera("start") first.'}],
                 }
             _load_model()  # fail fast if weights unavailable
-            _monitor_active = True
-            _monitor_thread = threading.Thread(
-                target=_monitor_worker, args=(confidence, max(0.5, float(interval))), daemon=True
+            browser_camera.start_detection_monitor()
+            session_id = browser_camera.current_session_id()
+            monitor_thread = threading.Thread(
+                target=_monitor_worker,
+                args=(session_id, confidence, max(0.5, float(interval))),
+                daemon=True,
             )
-            _monitor_thread.start()
+            monitor_thread.start()
             return {"status": "success", "content": [{"text": f"👁 Continuous detection started (conf {confidence}, every {interval}s)."}]}
 
         if action == "stop":
-            _monitor_active = False
-            with _lock:
-                summary = ", ".join(f"{label} (max {count})" for label, count in sorted(_totals.items())) or "nothing detected"
+            status = browser_camera.detection_status()
+            browser_camera.stop_detection_monitor()
+            _publish_analysis(time.time(), {"width": 0, "height": 0, "detections": [], "objects": {}})
+            summary = ", ".join(f"{label} (max {count})" for label, count in status["totals"].items()) or "nothing detected"
             return {"status": "success", "content": [{"text": f"👁 Monitoring stopped. Seen this session: {summary}."}]}
 
         if action == "status":
-            with _lock:
-                recent = _history[-5:]
-                summary = ", ".join(f"{label} (max {count})" for label, count in sorted(_totals.items())) or "nothing yet"
-            lines = [f"👁 Monitoring {'ACTIVE' if _monitor_active else 'inactive'} — totals: {summary}"]
-            for entry in recent:
+            status = browser_camera.detection_status()
+            summary = ", ".join(f"{label} (max {count})" for label, count in status["totals"].items()) or "nothing yet"
+            lines = [f"👁 Monitoring {'ACTIVE' if status['active'] else 'inactive'} — totals: {summary}"]
+            for entry in status["recent"]:
                 listing = ", ".join(f"{label} ×{count}" for label, count in entry["objects"].items())
                 lines.append(f"  {time.strftime('%H:%M:%S', time.localtime(entry['ts']))}: {listing}")
             return {"status": "success", "content": [{"text": "\n".join(lines)}]}

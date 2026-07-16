@@ -33,6 +33,30 @@ def test_session_media_isolates_frames_and_clips():
     assert registry.wait_for_clip("session-b", 0.01) == {"path": "b.webm"}
 
 
+def test_session_media_isolates_multiple_yolo_detections():
+    registry = SessionMediaRegistry(max_frames=2)
+    payload = {
+        "type": "yolo_detections",
+        "timestamp": 123.0,
+        "detections": [
+            {"x1": 0.1, "y1": 0.2, "x2": 0.4, "y2": 0.8, "confidence": 0.91, "classId": 0, "label": "person"},
+            {"x1": 0.5, "y1": 0.3, "x2": 0.9, "y2": 0.7, "confidence": 0.82, "classId": 56, "label": "chair"},
+        ],
+    }
+
+    registry.publish_detections("session-a", payload, {"person": 1, "chair": 1})
+
+    sequence, delivered = registry.wait_for_detections("session-a", 0, 0.01)
+    assert sequence == 1
+    assert delivered == payload
+    assert registry.wait_for_detections("session-b", 0, 0.01) is None
+    assert registry.detection_status("session-a") == {
+        "active": False,
+        "totals": {"chair": 1, "person": 1},
+        "recent": [{"ts": 123.0, "objects": {"chair": 1, "person": 1}}],
+    }
+
+
 def test_browser_camera_compatible_wrappers_use_bound_session():
     from app import browser_camera
 
@@ -86,6 +110,70 @@ def test_yolo_waits_for_the_browser_camera_first_frame():
 
     assert result["status"] == "success"
     assert result["content"] == [{"text": "👁 No objects detected in the current view."}]
+
+
+def test_yolo_serializes_multiple_official_ultralytics_boxes():
+    import numpy as np
+    from ultralytics.engine.results import Results
+    from app import vision_tools
+
+    result = Results(
+        orig_img=np.zeros((200, 400, 3), dtype=np.uint8),
+        path="multi-detection.jpg",
+        names={0: "person", 56: "chair"},
+        boxes=np.array(
+            [
+                [40.0, 20.0, 200.0, 180.0, 0.91, 0.0],
+                [220.0, 60.0, 360.0, 160.0, 0.82, 56.0],
+            ],
+            dtype=np.float32,
+        ),
+    )
+
+    serialized = vision_tools._serialize_result(result)
+
+    assert serialized["width"] == 400
+    assert serialized["height"] == 200
+    assert serialized["objects"] == {"chair": 1, "person": 1}
+    assert len(serialized["detections"]) == 2
+    assert serialized["detections"][0] == {
+        "x1": pytest.approx(0.1),
+        "y1": pytest.approx(0.1),
+        "x2": pytest.approx(0.5),
+        "y2": pytest.approx(0.9),
+        "confidence": pytest.approx(0.91),
+        "classId": 0,
+        "label": "person",
+    }
+    assert serialized["detections"][1]["label"] == "chair"
+
+
+def test_yolo_continuous_monitor_keeps_authenticated_camera_session():
+    import cv2
+    import numpy as np
+    from app import browser_camera, vision_tools
+
+    session_id = "continuous-yolo-session"
+    token = browser_camera.bind_session(session_id)
+    encoded, jpeg = cv2.imencode(".jpg", np.zeros((640, 640, 3), dtype=np.uint8))
+    assert encoded
+    browser_camera.add_frame(base64.b64encode(jpeg.tobytes()).decode())
+
+    try:
+        started = vision_tools.yolo_vision.__wrapped__(action="start", interval=0.5)
+        event = browser_camera.wait_for_detections(0, timeout=5.0)
+        stopped = vision_tools.yolo_vision.__wrapped__(action="stop")
+    finally:
+        browser_camera.discard_session(session_id)
+        browser_camera.unbind_session(token)
+
+    assert started["status"] == "success"
+    assert event is not None
+    assert event[1]["type"] == "yolo_detections"
+    assert event[1]["width"] == 640
+    assert event[1]["height"] == 640
+    assert event[1]["detections"] == []
+    assert stopped["status"] == "success"
 
 
 def test_yolo_runtime_dependency_is_declared():

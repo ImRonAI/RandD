@@ -17,6 +17,10 @@ import {
 } from "@/lib/audio";
 import { CameraCapture } from "@/lib/camera";
 import type {
+  YoloDetection,
+  YoloDetectionFrame,
+} from "@/components/YoloOverlay";
+import type {
   AgentCard,
   ConnectionStatus,
   LiveMessage,
@@ -76,6 +80,8 @@ export const useLiveAgent = () => {
   const [cameraDeviceId, setCameraDeviceId] = useState<string | undefined>();
   const [cameraFacing, setCameraFacingState] = useState<"environment" | "user">("environment");
   const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
+  const [yoloDetectionFrame, setYoloDetectionFrame] =
+    useState<YoloDetectionFrame | null>(null);
   const [recording, setRecording] = useState(false);
   const [agentCard, setAgentCard] = useState<AgentCard | null>(null);
   const [voices, setVoices] = useState<LiveVoice[]>([]);
@@ -442,6 +448,34 @@ export const useLiveAgent = () => {
           audioChunksRef.current = [];
           break;
         }
+        case "yolo_detections": {
+          const width = Number(event.width);
+          const height = Number(event.height);
+          const timestamp = Number(event.timestamp);
+          const detections = Array.isArray(event.detections)
+            ? event.detections.filter((value): value is YoloDetection => {
+                if (!value || typeof value !== "object") return false;
+                const detection = value as Partial<YoloDetection>;
+                return (
+                  typeof detection.label === "string" &&
+                  [
+                    detection.x1,
+                    detection.y1,
+                    detection.x2,
+                    detection.y2,
+                    detection.confidence,
+                    detection.classId,
+                  ].every((item) => typeof item === "number" && Number.isFinite(item))
+                );
+              })
+            : [];
+          setYoloDetectionFrame(
+            Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0
+              ? { width, height, timestamp, detections }
+              : null
+          );
+          break;
+        }
         case "bidi_tools_updated": {
           const names = Array.isArray(event.tools)
             ? event.tools.filter((name): name is string => typeof name === "string")
@@ -592,6 +626,7 @@ export const useLiveAgent = () => {
     cameraRef.current = null;
     setCameraActive(false);
     setCameraStream(null);
+    setYoloDetectionFrame(null);
     await playerRef.current?.close();
     playerRef.current = null;
     socketRef.current?.close();
@@ -619,6 +654,7 @@ export const useLiveAgent = () => {
     socket.onclose = () => {
       setStatus("disconnected");
       setMicActive(false);
+      setYoloDetectionFrame(null);
     };
     socket.onerror = () => {
       setError("WebSocket connection failed — is the backend running?");
@@ -723,6 +759,7 @@ export const useLiveAgent = () => {
     cameraRef.current = null;
     setCameraActive(false);
     setCameraStream(null);
+    setYoloDetectionFrame(null);
   }, []);
 
   /** Pick a specific camera by deviceId (any webcam / built-in / USB / phone lens). */
@@ -954,6 +991,7 @@ export const useLiveAgent = () => {
     cameraDeviceId,
     cameraFacing,
     cameraStream,
+    yoloDetectionFrame,
     recording,
     startCamera,
     stopCamera,

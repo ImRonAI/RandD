@@ -58,6 +58,7 @@ import {
   QueueSectionTrigger,
 } from "@/components/ai-elements/queue";
 import { SpeechInput } from "@/components/ai-elements/speech-input";
+import { YoloOverlay } from "@/components/YoloOverlay";
 import type { LiveAgent } from "@/hooks/use-live-agent";
 
 /** Floating live preview of the streaming device camera. */
@@ -73,13 +74,19 @@ const CameraPreview = ({ agent }: { agent: LiveAgent }) => {
   if (!agent.cameraStream) return null;
   return (
     <div className="mx-auto mb-2 w-full max-w-3xl">
-      <div className="relative ml-auto w-fit">
+      <div className="relative ml-auto w-fit overflow-hidden rounded-md">
         <video
           autoPlay
-          className="h-28 rounded-md border object-cover"
+          className={`h-28 rounded-md border object-cover ${
+            agent.cameraFacing === "user" ? "-scale-x-100" : ""
+          }`}
           muted
           playsInline
           ref={videoRef}
+        />
+        <YoloOverlay
+          facing={agent.cameraFacing}
+          frame={agent.yoloDetectionFrame}
         />
         {agent.recording ? (
           <span className="absolute top-1.5 left-1.5 flex items-center gap-1 rounded-full bg-black/60 px-2 py-0.5 font-semibold text-[10px] text-white tracking-wide backdrop-blur-sm">

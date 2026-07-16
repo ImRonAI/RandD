@@ -73,6 +73,30 @@ def stream_active(max_age_seconds: float = 15.0) -> bool:
     return _registry.stream_active(current_session_id(), max_age_seconds)
 
 
+def publish_detections(payload: dict, objects: dict[str, int]) -> None:
+    _registry.publish_detections(current_session_id(), payload, objects)
+
+
+def wait_for_detections(after_sequence: int, timeout: float = 1.0) -> tuple[int, dict] | None:
+    return _registry.wait_for_detections(current_session_id(), after_sequence, timeout)
+
+
+def start_detection_monitor() -> bool:
+    return _registry.start_detection_monitor(current_session_id())
+
+
+def stop_detection_monitor() -> None:
+    _registry.stop_detection_monitor(current_session_id())
+
+
+def detection_monitor_active() -> bool:
+    return _registry.detection_monitor_active(current_session_id())
+
+
+def detection_status() -> dict:
+    return _registry.detection_status(current_session_id())
+
+
 def arm_clip_capture() -> None:
     _registry.arm_clip(current_session_id())
 

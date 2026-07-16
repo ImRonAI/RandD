@@ -96,6 +96,7 @@ class BidiGeminiLiveModel(BidiModel):
         self._live_session_context_manager: Any = None
         self._live_session_handle: str | None = None
         self._connection_id: str | None = None
+        self._tool_names_by_id: dict[str, str] = {}
 
     def _resolve_client_config(self, config: dict[str, Any]) -> dict[str, Any]:
         """Resolve client config (sets default http_options if not provided)."""
@@ -322,9 +323,12 @@ class BidiGeminiLiveModel(BidiModel):
         if message.tool_call and message.tool_call.function_calls:
             tool_events: list[BidiOutputEvent] = []
             for func_call in message.tool_call.function_calls:
+                tool_use_id = cast(str, func_call.id)
+                tool_name = cast(str, func_call.name)
+                self._tool_names_by_id[tool_use_id] = tool_name
                 tool_use_event: ToolUse = {
-                    "toolUseId": cast(str, func_call.id),
-                    "name": cast(str, func_call.name),
+                    "toolUseId": tool_use_id,
+                    "name": tool_name,
                     "input": func_call.args or {},
                 }
                 # Create ToolUseStreamEvent for consistency with standard agent
@@ -468,9 +472,10 @@ class BidiGeminiLiveModel(BidiModel):
             result_data = {"result": content}
 
         # Create function response
+        tool_name = self._tool_names_by_id.pop(cast(str, tool_use_id), cast(str, tool_use_id))
         func_response = genai_types.FunctionResponse(
             id=tool_use_id,
-            name=tool_use_id,  # Gemini uses name as identifier
+            name=tool_name,
             response=result_data,
         )
 

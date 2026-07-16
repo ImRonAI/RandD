@@ -247,3 +247,29 @@ def test_gemini_graceful_restart_reuses_latest_resumption_handle() -> None:
     config = model._build_live_config()
 
     assert config["session_resumption"] == {"handle": "resume-handle"}
+
+
+@pytest.mark.asyncio
+async def test_gemini_tool_response_uses_declared_function_name() -> None:
+    class RecordingSession:
+        def __init__(self) -> None:
+            self.responses: list[Any] = []
+
+        async def send_tool_response(self, *, function_responses: list[Any]) -> None:
+            self.responses.extend(function_responses)
+
+    model = object.__new__(BidiGeminiLiveModel)
+    model._live_session = RecordingSession()
+    model._tool_names_by_id = {"opaque-call-id": "yolo_vision"}
+
+    await model._send_tool_result(
+        {
+            "toolUseId": "opaque-call-id",
+            "status": "success",
+            "content": [{"json": {"objects": {"person": 1}}}],
+        }
+    )
+
+    response = model._live_session.responses[0]
+    assert response.id == "opaque-call-id"
+    assert response.name == "yolo_vision"
