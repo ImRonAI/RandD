@@ -162,8 +162,10 @@ class BidiGeminiLiveModel(BidiModel):
         )
         self._live_session = await self._live_session_context_manager.__aenter__()
 
-        # Gemini itself restores message history when resuming from session
-        if messages and "live_session_handle" not in kwargs:
+        # Gemini restores conversation history when the live session is resumed.
+        # Replaying messages as well would duplicate the conversation and can
+        # make the model repeat tool calls that already completed.
+        if messages and self._live_session_handle is None:
             await self._send_message_history(messages)
 
     async def _send_message_history(self, messages: Messages) -> None:
@@ -428,14 +430,13 @@ class BidiGeminiLiveModel(BidiModel):
     async def _send_image_content(self, image_input: BidiImageInputEvent) -> None:
         """Internal: Send image content using Gemini Live API.
 
-        Sends image frames following the same pattern as the GitHub example.
-        Images are sent as base64-encoded data with MIME type.
+        Send camera frames through the SDK's realtime video input channel.
         """
-        # Image is already base64 encoded in the event
-        msg = {"mime_type": image_input.mime_type, "data": image_input.image}
-
-        # Send using the same method as the GitHub example
-        await self._live_session.send(input=msg)
+        image_blob = genai_types.Blob(
+            data=base64.b64decode(image_input.image),
+            mime_type=image_input.mime_type,
+        )
+        await self._live_session.send_realtime_input(video=image_blob)
 
     async def _send_text_content(self, text: str) -> None:
         """Internal: Send text content using Gemini Live API."""

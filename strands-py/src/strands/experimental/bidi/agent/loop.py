@@ -79,6 +79,7 @@ class _BidiAgentLoop:
         self._tools_restart_queued = False
         self._turn_in_progress = False
         self._active_tool_calls = 0
+        self._model_generation = 0
         self._agent.hooks.add_callback(BidiAfterToolCallEvent, self._after_tool_call)
 
     async def start(self, invocation_state: dict[str, Any] | None = None) -> None:
@@ -111,7 +112,8 @@ class _BidiAgentLoop:
         self._event_queue = asyncio.Queue(maxsize=1)
 
         self._task_pool = _TaskPool()
-        self._task_pool.create(self._run_model())
+        self._model_generation += 1
+        self._task_pool.create(self._run_model(self._model_generation))
 
         self._invocation_state = invocation_state or {}
         self._send_gate.set()
@@ -237,6 +239,8 @@ class _BidiAgentLoop:
                 )
 
             restart_exception = None
+            self._model_generation += 1
+            restart_generation = self._model_generation
             try:
                 await self._agent.model.stop()
                 await self._agent.model.start(
@@ -246,7 +250,7 @@ class _BidiAgentLoop:
                     **(timeout_error.restart_config if timeout_error is not None else {}),
                 )
                 self._declared_tool_names = tool_names
-                self._task_pool.create(self._run_model())
+                self._task_pool.create(self._run_model(restart_generation))
             except Exception as exception:
                 restart_exception = exception
             finally:
@@ -282,7 +286,7 @@ class _BidiAgentLoop:
         self._tools_restart_queued = True
         await self._event_queue.put(_TOOLS_CHANGED)
 
-    async def _run_model(self) -> None:
+    async def _run_model(self, generation: int) -> None:
         """Task for running the model.
 
         Events are streamed through the event queue.
@@ -291,6 +295,8 @@ class _BidiAgentLoop:
 
         try:
             async for event in self._agent.model.receive():
+                if generation != self._model_generation:
+                    return
                 await self._event_queue.put(event)
 
                 if isinstance(event, BidiResponseStartEvent):
@@ -323,7 +329,10 @@ class _BidiAgentLoop:
                     await self._restart_for_updated_tools_if_ready()
 
         except Exception as error:
-            await self._event_queue.put(error)
+            if generation == self._model_generation:
+                await self._event_queue.put(error)
+            else:
+                logger.debug("ignoring stale model receive error during intentional restart", exc_info=error)
 
     async def _run_tool(self, tool_use: ToolUse) -> None:
         """Task for running tool requested by the model using the tool executor.

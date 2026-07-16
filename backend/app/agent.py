@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from typing import Any
 
 from app import _vendor  # noqa: F401  (must run before strands.experimental.bidi imports)
@@ -158,10 +159,17 @@ def create_agent(
 ) -> BidiAgent:
     """Create one BidiAgent per connection, on the requested vended provider."""
     model = build_model(provider, mode, voice)
+    app_tool_directory = Path(__file__).resolve().parent
+    runtime_prompt = (
+        f"{SYSTEM_PROMPT}\n\n## RUNTIME TOOL PATHS\n"
+        f"App tool directory: {app_tool_directory}\n"
+        "Use this exact directory for app tools. Never scan the filesystem root "
+        "or search unrelated directories for tools."
+    )
     return BidiAgent(
         model=model,
         tools=TOOLS + list(session_tools or ()) + memory_tools(),
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=runtime_prompt,
         name="Vantage AI",
         description="Tenant-scoped real-time field operations and property inspection agent.",
     )

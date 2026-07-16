@@ -12,6 +12,7 @@ from strands import tool
 from strands.experimental.bidi import (
     BidiAgent,
     BidiResponseCompleteEvent,
+    BidiResponseStartEvent,
     ToolUseStreamEvent,
 )
 from strands.experimental.bidi.models.gemini_live import BidiGeminiLiveModel
@@ -65,6 +66,22 @@ class RecordingBidiModel:
         await self._events.put(event)
 
 
+class RestartCloseErrorModel(RecordingBidiModel):
+    """Provider whose old receive stream errors when an intentional stop closes it."""
+
+    async def start(self, *args: Any, **kwargs: Any) -> None:
+        self._events = asyncio.Queue()
+        await super().start(*args, **kwargs)
+
+    async def receive(self) -> AsyncGenerator[Any, None]:
+        events = self._events
+        while True:
+            event = await events.get()
+            if event is self._stop_receive:
+                raise RuntimeError("provider receive closed during intentional restart")
+            yield event
+
+
 def _write_tool(path: Path, name: str) -> None:
     path.write_text(
         "from strands import tool\n\n"
@@ -91,7 +108,7 @@ async def test_loaded_tools_restart_once_after_turn_and_preserve_messages(
     _write_tool(first_path, "first_dynamic")
     _write_tool(second_path, "second_dynamic")
 
-    model = RecordingBidiModel()
+    model = RestartCloseErrorModel()
     initial_message = {"role": "user", "content": [{"text": "load both tools"}]}
     agent = BidiAgent(
         model=model,
@@ -152,6 +169,13 @@ async def test_loaded_tools_restart_once_after_turn_and_preserve_messages(
         assert received[-1] == {
             "type": "bidi_tools_updated",
             "tools": ["first_dynamic", "load_tool", "second_dynamic"],
+        }
+
+        next_event = asyncio.create_task(anext(agent.receive()))
+        await model.emit(BidiResponseStartEvent(response_id="after-restart"))
+        assert await asyncio.wait_for(next_event, timeout=2) == {
+            "type": "bidi_response_start",
+            "response_id": "after-restart",
         }
     finally:
         if not receiver.done():

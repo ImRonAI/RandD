@@ -1,6 +1,9 @@
 import asyncio
 import base64
 import hashlib
+import threading
+import time
+from pathlib import Path
 
 import pytest
 
@@ -52,6 +55,46 @@ def test_browser_camera_rejects_unbound_access():
 
     with pytest.raises(RuntimeError, match="camera_session_unbound"):
         browser_camera.add_frame(base64.b64encode(b"foreign").decode())
+
+
+def test_yolo_waits_for_the_browser_camera_first_frame():
+    from app import browser_camera, vision_tools
+    import cv2
+    import numpy as np
+
+    session_id = "delayed-camera-frame"
+    token = browser_camera.bind_session(session_id)
+    encoded, jpeg = cv2.imencode(".jpg", np.zeros((640, 640, 3), dtype=np.uint8))
+    assert encoded
+
+    def deliver_frame() -> None:
+        time.sleep(0.05)
+        thread_token = browser_camera.bind_session(session_id)
+        try:
+            browser_camera.add_frame(base64.b64encode(jpeg.tobytes()).decode())
+        finally:
+            browser_camera.unbind_session(thread_token)
+
+    delivery = threading.Thread(target=deliver_frame)
+    delivery.start()
+    try:
+        result = vision_tools.yolo_vision.__wrapped__(action="detect")
+    finally:
+        delivery.join()
+        browser_camera.discard_session(session_id)
+        browser_camera.unbind_session(token)
+
+    assert result["status"] == "success"
+    assert result["content"] == [{"text": "👁 No objects detected in the current view."}]
+
+
+def test_yolo_runtime_dependency_is_declared():
+    requirements = Path(__file__).resolve().parents[1] / "requirements.txt"
+
+    assert any(
+        line.strip().lower().startswith("ultralytics")
+        for line in requirements.read_text().splitlines()
+    )
 
 
 @pytest.mark.asyncio
@@ -243,6 +286,12 @@ def test_agent_uses_six_core_and_session_tools(monkeypatch):
         "environment",
         "session_inventory_tool",
     }
+    assert captured.get("load_tools_from_directory", False) is False
+    assert "Use all available tools implicitly" not in captured["system_prompt"]
+    assert "Never scan the filesystem root" in captured["system_prompt"]
+    assert "call load_tool at most once for each missing tool" in captured["system_prompt"]
+    assert "retry a successful load" in captured["system_prompt"]
+    assert str(Path(agent_module.__file__).resolve().parent) in captured["system_prompt"]
 
 
 class FakeEscapiaClient:

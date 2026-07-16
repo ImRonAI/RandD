@@ -92,7 +92,7 @@ def yolo_vision(action: str = "detect", confidence: float = 0.4, interval: float
         action = action.strip().lower()
 
         if action == "detect":
-            frame = browser_camera.latest_frame()
+            frame = browser_camera.wait_for_frame()
             if frame is None:
                 return {
                     "status": "error",
@@ -107,7 +107,7 @@ def yolo_vision(action: str = "detect", confidence: float = 0.4, interval: float
         if action == "start":
             if _monitor_active:
                 return {"status": "success", "content": [{"text": "👁 Monitoring already running."}]}
-            if not browser_camera.stream_active():
+            if browser_camera.wait_for_frame() is None:
                 return {
                     "status": "error",
                     "content": [{"text": '❌ No live camera stream — call control_camera("start") first.'}],

@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextvars import ContextVar, Token
 from contextlib import contextmanager
 from dataclasses import dataclass
+import time
 
 from app.session_media import Frame, SessionMediaRegistry
 
@@ -45,6 +46,23 @@ def add_frame(image_b64: str) -> None:
 
 def latest_frame(max_age_seconds: float = 15.0) -> Frame | None:
     return _registry.latest_frame(current_session_id(), max_age_seconds)
+
+
+def wait_for_frame(
+    timeout_seconds: float = 5.0,
+    max_age_seconds: float = 15.0,
+    poll_interval: float = 0.05,
+) -> Frame | None:
+    """Wait briefly for the browser's asynchronous camera startup to yield a frame."""
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    while True:
+        frame = latest_frame(max_age_seconds)
+        if frame is not None:
+            return frame
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        time.sleep(min(max(0.01, poll_interval), remaining))
 
 
 def frames_since(start_ts: float) -> list[Frame]:
