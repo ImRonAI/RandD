@@ -82,7 +82,10 @@ async def _wait_until(predicate: Any, timeout: float = 2.0) -> None:
 
 
 @pytest.mark.asyncio
-async def test_loaded_tools_restart_once_after_turn_and_preserve_messages(tmp_path: Path) -> None:
+async def test_loaded_tools_restart_once_after_turn_and_preserve_messages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BYPASS_TOOL_CONSENT", "true")
     first_path = tmp_path / "first_dynamic.py"
     second_path = tmp_path / "second_dynamic.py"
     _write_tool(first_path, "first_dynamic")
