@@ -5,19 +5,14 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
-import sqlite3
-
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-from fastapi.responses import JSONResponse
 from strands.tools.registry import ToolRegistry
 
-from app import auth
 from app.agent import DEFAULT_MODEL_ID, DEFAULT_PROVIDER, PROVIDERS, TOOLS, create_agent
 from app.agentcore_browser import LiveViewAgentCoreBrowser
 from app import browser_camera
@@ -89,151 +84,6 @@ app.include_router(create_google_day_router(
 REPORTS_DIR = WORKSPACE_DIR / "reports"
 LATEST_REPORT = REPORTS_DIR / "inspection-report-latest.html"
 CAPTURES_DIR = WORKSPACE_DIR / "captures"
-
-
-# ---------------------------------------------------------------------------
-# Authentication endpoints
-# ---------------------------------------------------------------------------
-
-
-class LoginBody(BaseModel):
-    email: str
-    password: str
-
-
-class CreateTenantBody(BaseModel):
-    name: str
-    slug: str
-
-
-class CreateUserBody(BaseModel):
-    email: str
-    password: str
-
-
-def _tenant_public(tenant: dict[str, Any] | None) -> dict[str, Any] | None:
-    if not tenant:
-        return None
-    return {"tenant_id": tenant["tenant_id"], "name": tenant["name"], "slug": tenant["slug"]}
-
-
-def _user_public(user: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "user_id": user["user_id"],
-        "email": user["email"],
-        "tenant_id": user["tenant_id"],
-        "is_platform_admin": bool(user["is_platform_admin"]),
-    }
-
-
-@app.post("/api/auth/login")
-async def auth_login(body: LoginBody) -> JSONResponse:
-    """Verify credentials; on success set the session cookie."""
-    user = await run_in_threadpool(auth.get_user_by_email, body.email)
-    if not user or not user.get("is_active") or not auth.verify_password(
-        body.password, user.get("password_hash")
-    ):
-        raise HTTPException(status_code=401, detail="invalid credentials")
-    token = auth.create_session_token(
-        user["user_id"], user["tenant_id"], bool(user["is_platform_admin"])
-    )
-    tenant = await run_in_threadpool(auth.get_tenant_by_id, user["tenant_id"])
-    response = JSONResponse(
-        {"user": _user_public(user), "tenant": _tenant_public(tenant)}
-    )
-    auth.set_session_cookie(response, token)
-    return response
-
-
-@app.post("/api/auth/logout")
-async def auth_logout(user: dict[str, Any] = Depends(auth.current_user)) -> JSONResponse:
-    response = JSONResponse({"ok": True})
-    auth.clear_session_cookie(response)
-    return response
-
-
-@app.get("/api/auth/me")
-async def auth_me(user: dict[str, Any] = Depends(auth.current_user)) -> dict[str, Any]:
-    full = await run_in_threadpool(auth.get_user_by_id, user["user_id"])
-    tenant = await run_in_threadpool(auth.get_tenant_by_id, user["tenant_id"])
-    return {"user": _user_public(full), "tenant": _tenant_public(tenant)}
-
-
-@app.post("/api/auth/ws-token")
-async def auth_ws_token(user: dict[str, Any] = Depends(auth.current_user)) -> dict[str, str]:
-    token = auth.create_ws_token(
-        user["user_id"], user["tenant_id"], bool(user["is_platform_admin"])
-    )
-    return {"token": token}
-
-
-# ---------------------------------------------------------------------------
-# Platform-admin endpoints
-# ---------------------------------------------------------------------------
-
-
-@app.post("/api/admin/tenants")
-async def admin_create_tenant(
-    body: CreateTenantBody,
-    admin: dict[str, Any] = Depends(auth.require_platform_admin),
-) -> dict[str, Any]:
-    def _create() -> dict[str, Any]:
-        with auth._connect() as conn:
-            try:
-                cur = conn.execute(
-                    "INSERT INTO tenant (name, slug) VALUES (?, ?)",
-                    (body.name, body.slug),
-                )
-                conn.commit()
-            except sqlite3.IntegrityError as exc:
-                raise HTTPException(status_code=409, detail=f"slug already exists: {exc}")
-            tid = cur.lastrowid
-            row = conn.execute(
-                "SELECT tenant_id, name, slug FROM tenant WHERE tenant_id = ?", (tid,)
-            ).fetchone()
-            return dict(row)
-
-    tenant = await run_in_threadpool(_create)
-    return {"tenant": _tenant_public(tenant)}
-
-
-@app.post("/api/admin/tenants/{tenant_id}/users")
-async def admin_create_tenant_user(
-    tenant_id: int,
-    body: CreateUserBody,
-    admin: dict[str, Any] = Depends(auth.require_platform_admin),
-) -> dict[str, Any]:
-    def _create() -> dict[str, Any]:
-        with auth._connect() as conn:
-            trow = conn.execute(
-                "SELECT tenant_id FROM tenant WHERE tenant_id = ?", (tenant_id,)
-            ).fetchone()
-            if not trow:
-                raise HTTPException(status_code=404, detail="tenant not found")
-            pw_hash = auth.hash_password(body.password)
-            try:
-                cur = conn.execute(
-                    """
-                    INSERT INTO app_user (tenant_id, email, password_hash, is_platform_admin)
-                    VALUES (?, ?, ?, 0)
-                    """,
-                    (tenant_id, body.email, pw_hash),
-                )
-                conn.commit()
-            except sqlite3.IntegrityError as exc:
-                raise HTTPException(status_code=409, detail=f"email already exists: {exc}")
-            uid = cur.lastrowid
-            row = conn.execute(
-                """
-                SELECT user_id, tenant_id, email, is_platform_admin
-                  FROM app_user WHERE user_id = ?
-                """,
-                (uid,),
-            ).fetchone()
-            return dict(row)
-
-    user = await run_in_threadpool(_create)
-    return {"user": _user_public({**user, "is_platform_admin": user["is_platform_admin"]})}
 
 
 @app.post("/api/inspection/video")
