@@ -56,6 +56,7 @@ import {
   VoiceSelectorTrigger,
 } from "@/components/ai-elements/voice-selector";
 import { Button } from "@/components/ui/button";
+import { YoloOverlay } from "@/components/YoloOverlay";
 import type { LiveAgent } from "@/hooks/use-live-agent";
 import type { LiveModel } from "@/lib/live-types";
 import { cn } from "@/lib/utils";
@@ -131,6 +132,9 @@ const CameraControls = ({ agent }: { agent: LiveAgent }) => {
             <CameraOffIcon className="size-6" />
           </div>
         )}
+        {agent.cameraActive ? (
+          <YoloOverlay facing={facing} frame={agent.yoloDetectionFrame} />
+        ) : null}
       </div>
 
       <div className="flex items-center gap-2">

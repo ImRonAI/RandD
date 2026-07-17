@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from typing import Any
 
 from app import _vendor  # noqa: F401  (must run before strands.experimental.bidi imports)
@@ -78,7 +79,9 @@ PROVIDERS: dict[str, dict[str, Any]] = {
 # front. The native `load_tool` tool loads any other tool on demand from its file
 # path; `mcp_client` reaches remote MCP tools. All tool imports above are kept
 # intentionally so every module stays importable for load_tool. Session-scoped
-# tools are injected per connection in app/main.py.
+# tools are injected per connection in app/main.py. A tool loaded during a live
+# turn is declared through a graceful session restart and is callable starting
+# with the next turn.
 TOOLS = [
     editor.editor,
     shell.shell,
@@ -156,10 +159,17 @@ def create_agent(
 ) -> BidiAgent:
     """Create one BidiAgent per connection, on the requested vended provider."""
     model = build_model(provider, mode, voice)
+    app_tool_directory = Path(__file__).resolve().parent
+    runtime_prompt = (
+        f"{SYSTEM_PROMPT}\n\n## RUNTIME TOOL PATHS\n"
+        f"App tool directory: {app_tool_directory}\n"
+        "Use this exact directory for app tools. Never scan the filesystem root "
+        "or search unrelated directories for tools."
+    )
     return BidiAgent(
         model=model,
         tools=TOOLS + list(session_tools or ()) + memory_tools(),
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=runtime_prompt,
         name="Vantage AI",
         description="Tenant-scoped real-time field operations and property inspection agent.",
     )

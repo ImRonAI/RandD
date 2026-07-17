@@ -7,14 +7,17 @@ input reading, event fan-out, task-group supervision, and ``stop_all``
 cleanup. We do not hand-roll a bridge around ``send``/``receive``.
 """
 
+import asyncio
 import base64
 import json
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from typing import Any
 
 from fastapi import WebSocket
 
 from app import _vendor  # noqa: F401  (vendored bidi must shadow pip copy)
+from app import browser_camera
 from strands.experimental.bidi.types.events import (
     BidiAudioInputEvent,
     BidiImageInputEvent,
@@ -116,12 +119,36 @@ class BidiWebSocketOutput:
     def __init__(self, websocket: WebSocket) -> None:
         self._websocket = websocket
         self._tool_uses: dict[str, dict[str, Any]] = {}
+        self._send_lock = asyncio.Lock()
+        self._detection_task: asyncio.Task[None] | None = None
 
     async def start(self, agent: Any) -> None:  # noqa: ANN401 (protocol signature)
-        return
+        self._detection_task = asyncio.create_task(self._forward_yolo_detections())
 
     async def stop(self) -> None:
-        return
+        if self._detection_task is None:
+            return
+        self._detection_task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await self._detection_task
+        self._detection_task = None
+
+    async def _send(self, payload: dict[str, Any]) -> None:
+        async with self._send_lock:
+            await self._websocket.send_text(json.dumps(payload, default=str))
+
+    async def _forward_yolo_detections(self) -> None:
+        sequence = 0
+        while True:
+            event = await asyncio.to_thread(
+                browser_camera.wait_for_detections,
+                sequence,
+                0.5,
+            )
+            if event is None:
+                continue
+            sequence, payload = event
+            await self._send(payload)
 
     async def __call__(self, event: BidiOutputEvent) -> None:
         outgoing = _sanitize(dict(event))
@@ -146,4 +173,4 @@ class BidiWebSocketOutput:
             outgoing["output_tokens"] = outgoing.get("output_tokens", outgoing.get("outputTokens", 0))
             outgoing["total_tokens"] = outgoing.get("total_tokens", outgoing.get("totalTokens", 0))
 
-        await self._websocket.send_text(json.dumps(outgoing, default=str))
+        await self._send(outgoing)

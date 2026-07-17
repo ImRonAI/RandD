@@ -234,6 +234,19 @@ class BidiConnectionRestartEvent(TypedEvent):
         return cast("BidiModelTimeoutError", self["timeout_error"])
 
 
+class BidiToolsUpdatedEvent(TypedEvent):
+    """The live model reconnected with an updated tool declaration."""
+
+    def __init__(self, tools: list[str]):
+        """Initialize with the complete declared tool-name list."""
+        super().__init__({"type": "bidi_tools_updated", "tools": tools})
+
+    @property
+    def tools(self) -> list[str]:
+        """Names of all tools declared to the restarted live model."""
+        return cast(list[str], self["tools"])
+
+
 class BidiResponseStartEvent(TypedEvent):
     """Model starts generating a response.
 
@@ -599,6 +612,7 @@ BidiInputEvent = BidiTextInputEvent | BidiAudioInputEvent | BidiImageInputEvent
 BidiOutputEvent = (
     BidiConnectionStartEvent
     | BidiConnectionRestartEvent
+    | BidiToolsUpdatedEvent
     | BidiResponseStartEvent
     | BidiAudioStreamEvent
     | BidiTranscriptStreamEvent

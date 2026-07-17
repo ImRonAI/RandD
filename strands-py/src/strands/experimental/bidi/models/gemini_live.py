@@ -35,6 +35,7 @@ from ..types.events import (
     BidiInputEvent,
     BidiInterruptionEvent,
     BidiOutputEvent,
+    BidiResponseCompleteEvent,
     BidiTextInputEvent,
     BidiTranscriptStreamEvent,
     BidiUsageEvent,
@@ -95,6 +96,7 @@ class BidiGeminiLiveModel(BidiModel):
         self._live_session_context_manager: Any = None
         self._live_session_handle: str | None = None
         self._connection_id: str | None = None
+        self._tool_names_by_id: dict[str, str] = {}
 
     def _resolve_client_config(self, config: dict[str, Any]) -> dict[str, Any]:
         """Resolve client config (sets default http_options if not provided)."""
@@ -161,8 +163,10 @@ class BidiGeminiLiveModel(BidiModel):
         )
         self._live_session = await self._live_session_context_manager.__aenter__()
 
-        # Gemini itself restores message history when resuming from session
-        if messages and "live_session_handle" not in kwargs:
+        # Gemini restores conversation history when the live session is resumed.
+        # Replaying messages as well would duplicate the conversation and can
+        # make the model repeat tool calls that already completed.
+        if messages and self._live_session_handle is None:
             await self._send_message_history(messages)
 
     async def _send_message_history(self, messages: Messages) -> None:
@@ -233,6 +237,14 @@ class BidiGeminiLiveModel(BidiModel):
         # Handle interruption first (from server_content)
         if message.server_content and message.server_content.interrupted:
             return [BidiInterruptionEvent(reason="user_speech")]
+
+        if message.server_content and message.server_content.turn_complete:
+            return [
+                BidiResponseCompleteEvent(
+                    response_id=str(uuid.uuid4()),
+                    stop_reason="complete",
+                )
+            ]
 
         # Handle input transcription (user's speech) - emit as transcript event
         if message.server_content and message.server_content.input_transcription:
@@ -311,9 +323,12 @@ class BidiGeminiLiveModel(BidiModel):
         if message.tool_call and message.tool_call.function_calls:
             tool_events: list[BidiOutputEvent] = []
             for func_call in message.tool_call.function_calls:
+                tool_use_id = cast(str, func_call.id)
+                tool_name = cast(str, func_call.name)
+                self._tool_names_by_id[tool_use_id] = tool_name
                 tool_use_event: ToolUse = {
-                    "toolUseId": cast(str, func_call.id),
-                    "name": cast(str, func_call.name),
+                    "toolUseId": tool_use_id,
+                    "name": tool_name,
                     "input": func_call.args or {},
                 }
                 # Create ToolUseStreamEvent for consistency with standard agent
@@ -419,14 +434,13 @@ class BidiGeminiLiveModel(BidiModel):
     async def _send_image_content(self, image_input: BidiImageInputEvent) -> None:
         """Internal: Send image content using Gemini Live API.
 
-        Sends image frames following the same pattern as the GitHub example.
-        Images are sent as base64-encoded data with MIME type.
+        Send camera frames through the SDK's realtime video input channel.
         """
-        # Image is already base64 encoded in the event
-        msg = {"mime_type": image_input.mime_type, "data": image_input.image}
-
-        # Send using the same method as the GitHub example
-        await self._live_session.send(input=msg)
+        image_blob = genai_types.Blob(
+            data=base64.b64decode(image_input.image),
+            mime_type=image_input.mime_type,
+        )
+        await self._live_session.send_realtime_input(video=image_blob)
 
     async def _send_text_content(self, text: str) -> None:
         """Internal: Send text content using Gemini Live API."""
@@ -458,9 +472,10 @@ class BidiGeminiLiveModel(BidiModel):
             result_data = {"result": content}
 
         # Create function response
+        tool_name = self._tool_names_by_id.pop(cast(str, tool_use_id), cast(str, tool_use_id))
         func_response = genai_types.FunctionResponse(
             id=tool_use_id,
-            name=tool_use_id,  # Gemini uses name as identifier
+            name=tool_name,
             response=result_data,
         )
 
@@ -491,7 +506,9 @@ class BidiGeminiLiveModel(BidiModel):
         """
         config_dict: dict[str, Any] = self.config["inference"].copy()
 
-        config_dict["session_resumption"] = {"handle": kwargs.get("live_session_handle")}
+        config_dict["session_resumption"] = {
+            "handle": kwargs.get("live_session_handle", self._live_session_handle)
+        }
 
         # Add system instruction if provided
         if system_prompt:

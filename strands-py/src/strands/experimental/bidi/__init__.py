@@ -31,6 +31,7 @@ from .types.events import (
     BidiResponseCompleteEvent,
     BidiResponseStartEvent,
     BidiTextInputEvent,
+    BidiToolsUpdatedEvent,
     BidiTranscriptStreamEvent,
     BidiUsageEvent,
     ModalityUsage,
@@ -47,6 +48,7 @@ __all__ = [
     # Output Event types
     "BidiConnectionStartEvent",
     "BidiConnectionCloseEvent",
+    "BidiToolsUpdatedEvent",
     "BidiResponseStartEvent",
     "BidiResponseCompleteEvent",
     "BidiAudioStreamEvent",

@@ -20,6 +20,12 @@ class _SessionState:
     frames: deque[Frame]
     clip: dict | None = None
     clip_event: threading.Event = field(default_factory=threading.Event)
+    detection_sequence: int = 0
+    latest_detections: dict | None = None
+    detection_event: threading.Event = field(default_factory=threading.Event)
+    detection_monitor_active: bool = False
+    detection_history: deque[dict] = field(default_factory=lambda: deque(maxlen=500))
+    detection_totals: dict[str, int] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -63,6 +69,77 @@ class SessionMediaRegistry:
 
     def stream_active(self, session_id: str, max_age_seconds: float = 15.0) -> bool:
         return self.latest_frame(session_id, max_age_seconds) is not None
+
+    def publish_detections(self, session_id: str, payload: dict, objects: dict[str, int]) -> None:
+        """Publish the latest normalized YOLO boxes for one authenticated session."""
+        state = self._state(session_id)
+        with state.lock:
+            state.detection_sequence += 1
+            state.latest_detections = {
+                **payload,
+                "detections": [dict(item) for item in payload.get("detections", [])],
+            }
+            if objects:
+                state.detection_history.append(
+                    {"ts": float(payload.get("timestamp", time.time())), "objects": dict(sorted(objects.items()))}
+                )
+                for label, count in objects.items():
+                    state.detection_totals[label] = max(state.detection_totals.get(label, 0), count)
+            state.detection_event.set()
+
+    def wait_for_detections(
+        self,
+        session_id: str,
+        after_sequence: int,
+        timeout: float,
+    ) -> tuple[int, dict] | None:
+        """Wait for a detection payload newer than ``after_sequence``."""
+        state = self._state(session_id)
+        if not state.detection_event.wait(timeout):
+            return None
+        with state.lock:
+            if state.detection_sequence <= after_sequence or state.latest_detections is None:
+                state.detection_event.clear()
+                return None
+            sequence = state.detection_sequence
+            payload = {
+                **state.latest_detections,
+                "detections": [dict(item) for item in state.latest_detections.get("detections", [])],
+            }
+            state.detection_event.clear()
+            return sequence, payload
+
+    def start_detection_monitor(self, session_id: str) -> bool:
+        state = self._state(session_id)
+        with state.lock:
+            if state.detection_monitor_active:
+                return False
+            state.detection_monitor_active = True
+            state.detection_history.clear()
+            state.detection_totals.clear()
+            return True
+
+    def stop_detection_monitor(self, session_id: str) -> None:
+        state = self._state(session_id)
+        with state.lock:
+            state.detection_monitor_active = False
+
+    def detection_monitor_active(self, session_id: str) -> bool:
+        state = self._state(session_id)
+        with state.lock:
+            return state.detection_monitor_active
+
+    def detection_status(self, session_id: str) -> dict:
+        state = self._state(session_id)
+        with state.lock:
+            return {
+                "active": state.detection_monitor_active,
+                "totals": dict(sorted(state.detection_totals.items())),
+                "recent": [
+                    {"ts": entry["ts"], "objects": dict(entry["objects"])}
+                    for entry in list(state.detection_history)[-5:]
+                ],
+            }
 
     def arm_clip(self, session_id: str) -> None:
         state = self._state(session_id)

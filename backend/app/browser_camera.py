@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextvars import ContextVar, Token
 from contextlib import contextmanager
 from dataclasses import dataclass
+import time
 
 from app.session_media import Frame, SessionMediaRegistry
 
@@ -47,12 +48,53 @@ def latest_frame(max_age_seconds: float = 15.0) -> Frame | None:
     return _registry.latest_frame(current_session_id(), max_age_seconds)
 
 
+def wait_for_frame(
+    timeout_seconds: float = 5.0,
+    max_age_seconds: float = 15.0,
+    poll_interval: float = 0.05,
+) -> Frame | None:
+    """Wait briefly for the browser's asynchronous camera startup to yield a frame."""
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    while True:
+        frame = latest_frame(max_age_seconds)
+        if frame is not None:
+            return frame
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        time.sleep(min(max(0.01, poll_interval), remaining))
+
+
 def frames_since(start_ts: float) -> list[Frame]:
     return _registry.frames_since(current_session_id(), start_ts)
 
 
 def stream_active(max_age_seconds: float = 15.0) -> bool:
     return _registry.stream_active(current_session_id(), max_age_seconds)
+
+
+def publish_detections(payload: dict, objects: dict[str, int]) -> None:
+    _registry.publish_detections(current_session_id(), payload, objects)
+
+
+def wait_for_detections(after_sequence: int, timeout: float = 1.0) -> tuple[int, dict] | None:
+    return _registry.wait_for_detections(current_session_id(), after_sequence, timeout)
+
+
+def start_detection_monitor() -> bool:
+    return _registry.start_detection_monitor(current_session_id())
+
+
+def stop_detection_monitor() -> None:
+    _registry.stop_detection_monitor(current_session_id())
+
+
+def detection_monitor_active() -> bool:
+    return _registry.detection_monitor_active(current_session_id())
+
+
+def detection_status() -> dict:
+    return _registry.detection_status(current_session_id())
 
 
 def arm_clip_capture() -> None:
