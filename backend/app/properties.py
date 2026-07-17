@@ -28,14 +28,12 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
-def list_properties(tenant_id: int) -> List[Dict[str, Any]]:
+def list_properties() -> List[Dict[str, Any]]:
     """Active homes for the inspection dropdown, ordered by display name.
 
     Returns identity + address + door code so the form header can fully
     rehydrate when a different home is selected. Falls back to the unit code
     for the label when a home has no display name yet.
-
-    Scoped to ``tenant_id`` — never returns another tenant's rows.
     """
     try:
         with _connect() as conn:
@@ -54,10 +52,8 @@ def list_properties(tenant_id: int) -> List[Dict[str, Any]]:
                   LEFT JOIN cluster c ON p.cluster_id = c.cluster_id
                   LEFT JOIN stakeholder s ON p.qc_assignee_stakeholder_id = s.stakeholder_id
                  WHERE p.roster_active = 1
-                   AND p.tenant_id = ?
                  ORDER BY COALESCE(NULLIF(p.display_name, ''), p.unit_code)
-                """,
-                (tenant_id,),
+                """
             ).fetchall()
     except Exception:
         return []
@@ -86,14 +82,12 @@ def list_properties(tenant_id: int) -> List[Dict[str, Any]]:
     return properties
 
 
-def list_inspectors(tenant_id: int) -> List[Dict[str, Any]]:
+def list_inspectors() -> List[Dict[str, Any]]:
     """Stakeholders who can sign off a QC inspection.
 
     Prefers those carrying a QC / inspector / property-manager role, but falls
     back to the full stakeholder roster if role wiring is absent so the picker
     is never empty.
-
-    Scoped to ``tenant_id`` — never returns another tenant's stakeholders.
     """
     try:
         with _connect() as conn:
@@ -103,19 +97,16 @@ def list_inspectors(tenant_id: int) -> List[Dict[str, Any]]:
                   FROM stakeholder s
                   JOIN stakeholder_role sr ON s.stakeholder_id = sr.stakeholder_id
                   JOIN role r ON sr.role_id = r.role_id
-                 WHERE (r.role_key IN ('QC_INSPECTOR', 'PROPERTY_MANAGER')
+                 WHERE r.role_key IN ('QC_INSPECTOR', 'PROPERTY_MANAGER')
                     OR UPPER(r.role_name) LIKE '%QC%'
                     OR UPPER(r.role_name) LIKE '%INSPECT%'
-                    OR UPPER(r.role_name) LIKE '%PROPERTY MANAGER%')
-                   AND s.tenant_id = ?
+                    OR UPPER(r.role_name) LIKE '%PROPERTY MANAGER%'
                  ORDER BY s.full_name
-                """,
-                (tenant_id,),
+                """
             ).fetchall()
             if not rows:
                 rows = conn.execute(
-                    "SELECT stakeholder_id, full_name FROM stakeholder WHERE tenant_id = ? ORDER BY full_name",
-                    (tenant_id,),
+                    "SELECT stakeholder_id, full_name FROM stakeholder ORDER BY full_name"
                 ).fetchall()
     except Exception:
         return []

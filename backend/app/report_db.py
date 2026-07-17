@@ -48,14 +48,8 @@ def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def upsert_form(
-    state: Optional[Dict[str, Any]], html_bytes: int, tenant_id: int
-) -> Optional[str]:
-    """Insert/update the form's row from a live export. Returns the form UUID.
-
-    Scoped to ``tenant_id``: the row is stamped with it on insert and every
-    write is constrained to the caller's tenant.
-    """
+def upsert_form(state: Optional[Dict[str, Any]], html_bytes: int) -> Optional[str]:
+    """Insert/update the form's row from a live export. Returns the form UUID."""
     try:
         state = state or {}
         form_id = _form_uuid(state)
@@ -63,19 +57,17 @@ def upsert_form(
         now = _now()
         with _connect() as conn:
             conn.execute(
-                "INSERT INTO inspection_reports (form_uuid, tenant_id, created_utc, updated_utc,"
+                "INSERT INTO inspection_reports (form_uuid, created_utc, updated_utc,"
                 " property, signed_off, items_total, items_done, sections, repairs,"
-                " state_json, html_bytes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+                " state_json, html_bytes) VALUES (?,?,?,?,?,?,?,?,?,?,?)"
                 " ON CONFLICT(form_uuid) DO UPDATE SET"
                 " updated_utc=excluded.updated_utc, property=excluded.property,"
                 " signed_off=excluded.signed_off, items_total=excluded.items_total,"
                 " items_done=excluded.items_done, sections=excluded.sections,"
                 " repairs=excluded.repairs, state_json=excluded.state_json,"
-                " html_bytes=excluded.html_bytes"
-                " WHERE inspection_reports.tenant_id = excluded.tenant_id",
+                " html_bytes=excluded.html_bytes",
                 (
                     form_id,
-                    tenant_id,
                     state.get("createdUtc") or now,
                     now,
                     state.get("property"),
@@ -96,20 +88,19 @@ def upsert_form(
 def record_archive(
     state: Optional[Dict[str, Any]],
     html_bytes: int,
-    tenant_id: int,
     s3_summary_uri: Optional[str] = None,
     s3_artifact_uri: Optional[str] = None,
 ) -> Optional[str]:
     """Stamp the form's row with its archive destination. Returns the form UUID."""
-    form_id = upsert_form(state, html_bytes, tenant_id)
+    form_id = upsert_form(state, html_bytes)
     if not form_id:
         return None
     try:
         with _connect() as conn:
             conn.execute(
                 "UPDATE inspection_reports SET archived_utc=?, s3_summary_uri=?,"
-                " s3_artifact_uri=? WHERE form_uuid=? AND tenant_id=?",
-                (_now(), s3_summary_uri, s3_artifact_uri, form_id, tenant_id),
+                " s3_artifact_uri=? WHERE form_uuid=?",
+                (_now(), s3_summary_uri, s3_artifact_uri, form_id),
             )
         return form_id
     except Exception:

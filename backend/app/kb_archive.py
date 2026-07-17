@@ -134,12 +134,8 @@ def _start_ingestion(s3_client_unused: Any = None) -> Optional[str]:
         return None  # sync happens on the KB's own schedule instead
 
 
-def archive_report(html: str, tenant_id: int, note: Optional[str] = None) -> Dict[str, Any]:
-    """Upload the report (summary + full artifact) into the KB bucket folder.
-
-    ``tenant_id`` scopes the ``inspection_reports`` row written via
-    ``record_archive``.
-    """
+def archive_report(html: str, note: Optional[str] = None) -> Dict[str, Any]:
+    """Upload the report (summary + full artifact) into the KB bucket folder."""
     bucket = _bucket()
     if not bucket:
         raise RuntimeError(
@@ -169,7 +165,7 @@ def archive_report(html: str, tenant_id: int, note: Optional[str] = None) -> Dic
     from app.report_db import record_archive
 
     form_uuid = record_archive(
-        state, len(html.encode("utf-8")), tenant_id,
+        state, len(html.encode("utf-8")),
         s3_summary_uri=f"s3://{bucket}/{summary_key}",
         s3_artifact_uri=f"s3://{bucket}/{artifact_key}",
     )

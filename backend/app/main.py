@@ -241,7 +241,6 @@ async def inspection_video(
     request: Request,
     section: str = Query(default=""),
     duration: float = Query(default=0.0),
-    user: dict[str, Any] = Depends(auth.current_user),
 ) -> dict[str, Any]:
     """Receive a browser-recorded walkthrough clip (webm with mic audio).
 
@@ -289,9 +288,7 @@ async def inspection_video(
 
 
 @app.post("/api/inspection/export")
-async def inspection_export(
-    request: Request, user: dict[str, Any] = Depends(auth.current_user)
-) -> dict[str, str]:
+async def inspection_export(request: Request) -> dict[str, str]:
     """Receive the self-contained interactive inspection-form snapshot.
 
     The frontend posts the full HTML export (state + media baked in) whenever
@@ -300,7 +297,6 @@ async def inspection_export(
     knowledge-base S3 bucket (best-effort) so past inspections become
     searchable memory.
     """
-    tenant_id = user["tenant_id"]
     html = (await request.body()).decode("utf-8", errors="replace")
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     LATEST_REPORT.write_text(html, encoding="utf-8")
@@ -313,15 +309,11 @@ async def inspection_export(
         # Live persistence: every export updates the form's row (keyed by the
         # form's own UUID), so the database tracks the inspection as it is
         # filled out — not just at archive time.
-        form_id = await run_in_threadpool(
-            upsert_form, state, len(html.encode("utf-8")), tenant_id
-        )
+        form_id = await run_in_threadpool(upsert_form, state, len(html.encode("utf-8")))
         if form_id:
             result["form_uuid"] = form_id
         if state and state.get("signedOff") and os.getenv("BEDROCK_KB_S3_BUCKET"):
-            archived = await run_in_threadpool(
-                archive_report, html, tenant_id, "auto-archived on sign-off"
-            )
+            archived = await run_in_threadpool(archive_report, html, "auto-archived on sign-off")
             result["archived"] = archived["summary_uri"]
     except Exception:
         pass  # persistence/archiving must never break the export path
@@ -384,7 +376,7 @@ def tool_list() -> list[dict[str, str]]:
 
 
 @app.get("/api/agent")
-async def get_agent(user: dict[str, Any] = Depends(auth.current_user)) -> dict[str, Any]:
+async def get_agent() -> dict[str, Any]:
     return {
         "name": "Vantage AI",
         "model": os.getenv("GEMINI_LIVE_MODEL", DEFAULT_MODEL_ID),
@@ -394,7 +386,7 @@ async def get_agent(user: dict[str, Any] = Depends(auth.current_user)) -> dict[s
 
 
 @app.get("/api/models")
-async def get_models(user: dict[str, Any] = Depends(auth.current_user)) -> dict[str, Any]:
+async def get_models() -> dict[str, Any]:
     """The enabled vended bidi providers, for the frontend model picker."""
     return {
         "default": DEFAULT_PROVIDER,
@@ -414,27 +406,24 @@ async def get_models(user: dict[str, Any] = Depends(auth.current_user)) -> dict[
 
 
 @app.get("/api/voices")
-async def get_voices(
-    provider: str = Query(DEFAULT_PROVIDER, pattern="^(gemini|openai|nova)$"),
-    user: dict[str, Any] = Depends(auth.current_user),
-) -> dict[str, Any]:
+async def get_voices(provider: str = Query(DEFAULT_PROVIDER, pattern="^(gemini|openai|nova)$")) -> dict[str, Any]:
     return {"voices": VOICES[provider]}
 
 
 @app.get("/api/properties")
-async def get_properties(user: dict[str, Any] = Depends(auth.current_user)) -> dict[str, Any]:
+async def get_properties() -> dict[str, Any]:
     """Active homes for the inspection form's property dropdown."""
     from app.properties import list_properties
 
-    return {"properties": await run_in_threadpool(list_properties, user["tenant_id"])}
+    return {"properties": await run_in_threadpool(list_properties)}
 
 
 @app.get("/api/inspectors")
-async def get_inspectors(user: dict[str, Any] = Depends(auth.current_user)) -> dict[str, Any]:
+async def get_inspectors() -> dict[str, Any]:
     """QC inspectors who can sign off an inspection."""
     from app.properties import list_inspectors
 
-    return {"inspectors": await run_in_threadpool(list_inspectors, user["tenant_id"])}
+    return {"inspectors": await run_in_threadpool(list_inspectors)}
 
 
 # ── Field app (Vantage mobile) read endpoints — real data, additive only ─────
@@ -477,7 +466,7 @@ async def field_notifications() -> dict[str, Any]:
 
 
 @app.get("/api/workspace")
-async def get_workspace(user: dict[str, Any] = Depends(auth.current_user)) -> dict[str, Any]:
+async def get_workspace() -> dict[str, Any]:
     files = [
         str(path.relative_to(WORKSPACE_DIR))
         for path in WORKSPACE_DIR.rglob("*")
